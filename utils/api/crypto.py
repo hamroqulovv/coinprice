@@ -28,6 +28,8 @@ PLACEHOLDERS = {
     "coinbase url", "binance url", "coingecko url",
     "cbu url", "cbr-xml-daily url",
     "coinmarketcap api", "coinmarketcap url",
+    "your_key", "your_key_here", "key_here", "changeme", "placeholder",
+    "test", "xxx", "your_token", "token_here",
     "", "none", "null",
 }
 
@@ -139,21 +141,23 @@ async def _fetch(url, params=None, extra_headers=None):
         try:
             async with session.get(url, params=params, headers=extra_headers) as r:
                 status = r.status
-                if status == 429 and attempt < 2:
+                if (status == 429 or 500 <= status <= 504) and attempt < 2:
                     delay = backoff[attempt]
                     try:
                         retry_after = float(r.headers.get("Retry-After", ""))
                         delay = min(max(retry_after, 1.0), 30.0)
                     except (TypeError, ValueError):
                         pass
-                    logger.debug(f"HTTP 429 {url}, retry in {delay}s")
+                    logger.debug(f"HTTP {status} {url}, retry in {delay}s")
                     await asyncio.sleep(delay)
                     continue
                 if status != 200:
                     return status, None
                 try:
                     return status, await r.json()
-                except Exception:
+                except Exception as e:
+                    # 200 + broken JSON = API schema o'zgargan bo'lishi mumkin
+                    logger.warning(f"Bad JSON from {url}: {e}")
                     return status, None
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.debug(f"HTTP error {url}: {e}")
@@ -212,6 +216,7 @@ async def get_real_prices(coins):
     (Coinbase RUB spot kabi aralash FX ishlatilmaydi - consistency uchun).
     Mustaqil coinlar parallel fetch qilinadi (semaphore bilan).
     """
+    coins = list(coins)[:50]  # fan-out himoyasi
     # Real valyuta kurslarini parallel yangilash (10 min cache + fallback chain)
     usd_to_uzs, usd_to_rub = await asyncio.gather(get_uzs_rate(), get_rub_rate())
 
@@ -299,7 +304,7 @@ async def get_usd_median(coin):
     )
 
     candidates = []  # list of (price, source_name)
-    display_name = None
+    names = {}  # source_name -> display name (faqat dict qaytarganlar)
     for (fn, name), res in zip(fetchers, results):
         if isinstance(res, Exception):
             logger.debug(f"{name} median collect error for {coin}: {res}")
@@ -309,8 +314,8 @@ async def get_usd_median(coin):
             # Normalize: dict {"usd":.., "name":..} vs float
             if isinstance(raw, dict):
                 price = raw.get("usd")
-                if not display_name and raw.get("name"):
-                    display_name = raw.get("name")
+                if raw.get("name"):
+                    names[name] = raw.get("name")
             else:
                 price = raw
             if price and _is_sane_usd(price):
@@ -320,6 +325,15 @@ async def get_usd_median(coin):
 
     if not candidates:
         return None, None
+
+    # Nom manbasi: avval TIER1 (Gecko), keyin qolganlar (Dex scam-ticker
+    # nomi ishonchli manba nomi bilan ezilmaydi).
+    display_name = (
+        names.get("CoinGecko")
+        or names.get("Coinbase")
+        or names.get("CoinMarketCap")
+        or next(iter(names.values()), None)
+    )
 
     # Trust tiers (live-diagnosed 2026-09-11):
     # TIER1 = aggregated venues (many exchanges averaged) - most truthful.
@@ -487,67 +501,41 @@ async def get_from_coinmarketcap(coin):
         # CoinMarketCap API endpoint
         url = _get_env("COINMARKETCAP_URL")
         headers = {
-            'Accepts': 'application/json',
+            'Accept': 'application/json',
             'X-CMC_PRO_API_KEY': api_key,
         }
-        params = {
-            'symbol': symbol,
-            'convert': 'USD'
-        }
 
-        logger.debug(f"CoinMarketCap: Requesting price for {coin} (symbol: {symbol})")
-
-        status, data = await _fetch(url, params=params, extra_headers=headers)
-
-        if status == 200 and data:
-            # Debug uchun ma'lumot
-            logger.debug(f"CoinMarketCap response status: {status}")
-
-            # Check if data exists
-            if 'data' in data and symbol in data['data']:
-                coin_data = data['data'][symbol]
-
-                # Har doim birinchi elementni olish
+        async def _cmc_price(sym):
+            """Bitta symbol uchun narx (None bo'lsa topilmadi)."""
+            params = {'symbol': sym, 'convert': 'USD'}
+            status, data = await _fetch(url, params=params, extra_headers=headers)
+            if status == 401:
+                logger.warning("CoinMarketCap: Invalid API key (401 error)")
+                return None
+            if status == 429:
+                logger.debug("CoinMarketCap: Rate limit exceeded (429 error)")
+                return None
+            if status not in (200, 400, 404) or not data:
+                return None
+            if 'data' in data and sym in data['data']:
+                coin_data = data['data'][sym]
                 if isinstance(coin_data, list) and len(coin_data) > 0:
                     coin_info = coin_data[0]
-
                     if 'quote' in coin_info and 'USD' in coin_info['quote']:
                         price = coin_info['quote']['USD'].get('price')
-
                         if price is not None and _is_sane_usd(price):
                             logger.info(f"✅ CoinMarketCap: {coin} narxi: ${price}")
-                            return float(price), "CoinMarketCap"
+                            return float(price)
+            return None
 
-            # Agar symbol mapping bilan topilmasa, original symbol bilan urinib ko'ramiz
-            if symbol != coin:
-                logger.debug(f"CoinMarketCap: {symbol} bilan topilmadi, {coin} bilan urinib ko'ramiz")
-                params['symbol'] = coin
-                status, data = await _fetch(url, params=params, extra_headers=headers)
-
-                if status == 200 and data:
-                    if 'data' in data and coin in data['data']:
-                        coin_data = data['data'][coin]
-
-                        if isinstance(coin_data, list) and len(coin_data) > 0:
-                            coin_info = coin_data[0]
-
-                            if 'quote' in coin_info and 'USD' in coin_info['quote']:
-                                price = coin_info['quote']['USD'].get('price')
-
-                                if price is not None and _is_sane_usd(price):
-                                    logger.info(f"✅ CoinMarketCap: {coin} narxi: ${price}")
-                                    return float(price), "CoinMarketCap"
-
-        elif status == 400:
-            logger.debug(f"CoinMarketCap: Symbol {symbol} not found (400 error)")
-        elif status == 401:
-            logger.warning("CoinMarketCap: Invalid API key (401 error)")
-        elif status == 429:
-            logger.debug("CoinMarketCap: Rate limit exceeded (429 error)")
-        elif status == 404:
-            logger.debug(f"CoinMarketCap: {symbol} not found (404 error)")
-        else:
-            logger.debug(f"CoinMarketCap: Unexpected status code {status}")
+        logger.debug(f"CoinMarketCap: Requesting price for {coin} (symbol: {symbol})")
+        price = await _cmc_price(symbol)
+        if price is None and symbol != coin:
+            # Mapping bilan topilmasa original symbol bilan urinib ko'ramiz
+            logger.debug(f"CoinMarketCap: {symbol} bilan topilmadi, {coin} bilan urinib ko'ramiz")
+            price = await _cmc_price(coin)
+        if price is not None:
+            return price, "CoinMarketCap"
 
     except (aiohttp.ClientError, asyncio.TimeoutError):
         logger.debug(f"CoinMarketCap timeout for {coin}")
@@ -585,13 +573,19 @@ async def get_from_binance(coin):
                 status, data = await _fetch(url, params={"symbol": symbol})
 
                 if status == 200 and data:
-                    price = float(data.get("price", 0))
+                    try:
+                        price = float(data.get("price", 0))
+                    except (TypeError, ValueError):
+                        logger.warning(f"Binance schema change for {symbol}: {data!r:.100}")
+                        break
                     if _is_sane_usd(price):
                         return price, "Binance"
                 elif status == 400:
                     continue  # invalid symbol - keyingi fallbackni urinish
+                else:
+                    break  # 429/5xx/network: fallback'larni urinish faqat load qo'shadi
             except Exception:
-                continue
+                break
 
     except Exception as e:
         logger.debug(f"Binance error for {coin}: {e}")
@@ -619,11 +613,17 @@ async def get_from_bybit(coin):
                 if status == 200 and data:
                     lst = (data.get("result") or {}).get("list") or []
                     if lst:
-                        price = float(lst[0].get("lastPrice", 0))
+                        try:
+                            price = float(lst[0].get("lastPrice", 0))
+                        except (TypeError, ValueError):
+                            logger.warning(f"Bybit schema change for {symbol}")
+                            break
                         if _is_sane_usd(price):
                             return price, "Bybit"
+                elif status and status != 400:
+                    break  # 429/5xx/network: fallback'lar faqat load qo'shadi
             except Exception:
-                continue
+                break
     except Exception as e:
         logger.debug(f"Bybit error for {coin}: {e}")
 
@@ -817,7 +817,8 @@ async def get_from_dexscreener(coin):
     """
     DexScreener search API - DEX dagi HAR QANDAY token (memecoinlar ham).
     Free, key shart emas: GET /latest/dex/search?q={symbol}
-    Eng yuqori likvidlikdagi juftlik narxi olinadi.
+    Faqat ANIQ symbol match: unrelated juftlik narxi hech qachon
+    so'ralgan coin narxi sifatida qaytarilmaydi.
     Returns ({"usd":.., "name":..}, "DexScreener") yoki (None, None).
     """
     symbol = coin.upper().strip().lstrip("$")
@@ -834,14 +835,15 @@ async def get_from_dexscreener(coin):
         if not pairs:
             return None, None
 
-        # Aniq symbol match ustun, keyin likvidlik/volum bo'yicha
-        exact = [
+        # Faqat aniq symbol match - keyin likvidlik/volum bo'yicha.
+        # Aniq match bo'lmasa None (boshqa token narxini qaytarish xato).
+        pool = [
             p for p in pairs
             if str((p.get("baseToken") or {}).get("symbol", "")).upper() == symbol
             and p.get("priceUsd")
         ]
-        pool = exact or [p for p in pairs if p.get("priceUsd")]
         if not pool:
+            logger.debug(f"DexScreener: no exact match for {symbol}")
             return None, None
 
         def _score(p):
@@ -866,7 +868,8 @@ async def get_from_dexscreener(coin):
 async def _fetch_er_rate(ccy):
     """Secondary fiat source: open.er-api.com (free, no key). Returns rate or None."""
     try:
-        _, data = await _fetch(DEFAULTS["ER_API_URL"])
+        url = _get_env("ER_API_URL") or DEFAULTS["ER_API_URL"]
+        _, data = await _fetch(url)
         if data:
             rates = data.get("rates", {})
             rate = rates.get(ccy)
@@ -973,10 +976,9 @@ async def _demo():
     print("🚀 CRYPTO PRICE CHECKER - MULTI-SOURCE MEDIAN (async)")
     print("=" * 60)
 
-    # Check if CoinMarketCap API key is available
-    cmc_api_key = _get_env('COINMARKETCAP_API_KEY')
-    if cmc_api_key:
-        print(f"✅ CoinMarketCap API key found: {cmc_api_key[:10]}...")
+    # Check if CoinMarketCap API key is available (kalit matni logga chiqmaydi)
+    if _get_env('COINMARKETCAP_API_KEY'):
+        print("✅ CoinMarketCap API key found - median with CMC")
     else:
         print("⚠️  CoinMarketCap API key not found - median without CMC")
 
