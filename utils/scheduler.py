@@ -4,6 +4,12 @@ Avto-xabardorlik tizimi - FAQAT narx o'zgarganda yuboradi
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from loader import bot, db
 from utils.api.crypto import get_real_prices
 
@@ -17,6 +23,69 @@ user_next_send = {}
 
 # Bir vaqtda nechta userga xabar yuborish (Telegram rate-limit himoyasi)
 USER_CONCURRENCY = 5
+
+# Telegram bitta xabar limiti (4096) dan xavfsiz kichik chunk o'lchami
+MAX_MESSAGE_LEN = 3500
+# Doimiy yuborib bo'lmaydigan userlar (bloklagan/o'chirilgan) uchun backoff
+DEAD_USER_BACKOFF = timedelta(hours=6)
+
+
+def _format_coin_block(line):
+    """Bitta coin uchun xabar bloki (matn)."""
+    p = line['price']
+
+    # main.py format_price() bilan bir xil mantik -
+    # display consistency uchun (accuracy yo'qolmasligi uchun)
+    if p['usd'] >= 1:
+        usd_str = f"${p['usd']:,.2f}"
+    elif p['usd'] >= 0.01:
+        usd_str = f"${p['usd']:,.4f}"
+    elif p['usd'] >= 0.0001:
+        usd_str = f"${p['usd']:,.6f}"
+    else:
+        usd_str = f"${p['usd']:.8f}"
+
+    if p['rub'] >= 1:
+        rub_str = f"{p['rub']:,.2f} ₽"
+    elif p['rub'] >= 0.01:
+        rub_str = f"{p['rub']:,.4f} ₽"
+    else:
+        rub_str = f"{p['rub']:.6f} ₽"
+
+    if p['uzs'] >= 1000:
+        uzs_str = f"{int(round(p['uzs'])):,} so'm"
+    elif p['uzs'] >= 1:
+        uzs_str = f"{p['uzs']:,.2f} so'm"
+    else:
+        uzs_str = f"{p['uzs']:.4f} so'm"
+
+    nm = p.get('name')
+    title = f"{line['emoji']} <b>{line['coin']}</b>" + (f" ({nm})" if nm and nm.upper() != line['coin'] else "")
+    block = title + "\n"
+    block += f"   💵 {usd_str}\n"
+
+    if line['change'] is not None:
+        block += f"   📊 {line['sign']}{line['change']:.2f}%\n"
+
+    block += f"   🇺🇿 {uzs_str}\n"
+    block += f"   🇷🇺 {rub_str}\n\n"
+    return block
+
+
+def _split_alerts(message_lines, interval_sec):
+    """4096 limitdan oshmasligi uchun xabarlarni chunk'larga bo'lish."""
+    header = "📊 <b>Narx o'zgarishlari</b>\n\n"
+    footer = f"🕒 <i>Keyingi tekshirish: {interval_sec}s</i>"
+    chunks, cur = [], header
+    for line in message_lines:
+        block = _format_coin_block(line)
+        if len(cur) + len(block) > MAX_MESSAGE_LEN and len(cur) > len(header):
+            chunks.append(cur)
+            cur = header
+        cur += block
+    cur += footer
+    chunks.append(cur)
+    return chunks
 
 # Interval pastki chegarasi (sekund). main.MIN_INTERVAL bilan sinxron ushlang:
 # DB'dagi NULL/eskiqiymatlar shu yergacha ko'tariladi, spam/hot-loop bo'lmaydi.
@@ -128,51 +197,60 @@ async def send_price_updates():
             semaphore = asyncio.Semaphore(USER_CONCURRENCY)
 
             async def _process_user(user_id, interval_sec, coin_list, last_map):
-                async with semaphore:
-                    try:
-                        # O'zgarishlarni tekshirish
+                try:
+                    async with semaphore:
+                        now = datetime.now()
+                        checked_at = now.strftime("%Y-%m-%d %H:%M:%S")
+
+                        # O'zgarishlarni tekshirish (har bir coin alohida -
+                        # bitta yaroqsiz coin butun user'ni to'xtatmaydi)
                         changes_detected = []
                         message_lines = []
-                        checked_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
 
                         for coin in coin_list:
-                            coin_data = price_by_coin.get(coin)
-                            if not coin_data:
-                                continue
+                            try:
+                                coin_data = price_by_coin.get(coin)
+                                if not coin_data:
+                                    continue
 
-                            new_price = coin_data['usd']
-                            old_price = last_map.get(coin)
+                                new_price = coin_data.get('usd')
+                                if not isinstance(new_price, (int, float)) or not new_price > 0:
+                                    continue
+                                old_price = last_map.get(coin)
 
-                            # Narx o'zgarishini hisoblash (minimal 0.01% o'zgarish)
-                            if old_price:
-                                change_percent = calculate_price_change(old_price, new_price)
+                                # Narx o'zgarishini hisoblash (minimal 0.01% o'zgarish)
+                                if old_price is not None:
+                                    change_percent = calculate_price_change(old_price, new_price)
 
-                                # 0.01% dan katta o'zgarish bo'lsa
-                                if change_percent >= 0.01:
-                                    price_diff = new_price - old_price
-                                    emoji = "📈" if price_diff > 0 else "📉"
-                                    sign = "+" if price_diff > 0 else ""
+                                    # 0.01% dan katta o'zgarish bo'lsa
+                                    if change_percent >= 0.01:
+                                        price_diff = new_price - old_price
+                                        emoji = "📈" if price_diff > 0 else "📉"
+                                        sign = "+" if price_diff > 0 else ""
 
+                                        changes_detected.append(coin)
+                                        message_lines.append({
+                                            'coin': coin,
+                                            'emoji': emoji,
+                                            'price': coin_data,
+                                            'change': change_percent,
+                                            'diff': price_diff,
+                                            'sign': sign
+                                        })
+                                else:
+                                    # Birinchi marta - har doim yuborish
                                     changes_detected.append(coin)
                                     message_lines.append({
                                         'coin': coin,
-                                        'emoji': emoji,
+                                        'emoji': "💰",
                                         'price': coin_data,
-                                        'change': change_percent,
-                                        'diff': price_diff,
-                                        'sign': sign
+                                        'change': None,
+                                        'diff': None,
+                                        'sign': ""
                                     })
-                            else:
-                                # Birinchi marta - har doim yuborish
-                                changes_detected.append(coin)
-                                message_lines.append({
-                                    'coin': coin,
-                                    'emoji': "💰",
-                                    'price': coin_data,
-                                    'change': None,
-                                    'diff': None,
-                                    'sign': ""
-                                })
+                            except Exception as e:
+                                logger.error(f"Skipping coin {coin} for user {user_id}: {e}")
+                                continue
 
                             # Oxirgi narxni DB'ga saqlash (restart'dan omon qoladi)
                             try:
@@ -184,67 +262,43 @@ async def send_price_updates():
                             except Exception as e:
                                 logger.error(f"Error saving last_price for user {user_id}, coin {coin}: {e}")
 
-                        # Agar o'zgarish bo'lsa - xabar yuborish
+                        # Agar o'zgarish bo'lsa - xabar yuborish (chunk'larda)
                         if changes_detected:
-                            message_text = "📊 <b>Narx o'zgarishlari</b>\n\n"
-
-                            for line in message_lines:
-                                p = line['price']
-
-                                # main.py format_price() bilan bir xil mantik -
-                                # display consistency uchun (accuracy yo'qolmasligi uchun)
-                                if p['usd'] >= 1:
-                                    usd_str = f"${p['usd']:,.2f}"
-                                elif p['usd'] >= 0.01:
-                                    usd_str = f"${p['usd']:,.4f}"
-                                elif p['usd'] >= 0.0001:
-                                    usd_str = f"${p['usd']:,.6f}"
-                                else:
-                                    usd_str = f"${p['usd']:.8f}"
-
-                                if p['rub'] >= 1:
-                                    rub_str = f"{p['rub']:,.2f} ₽"
-                                elif p['rub'] >= 0.01:
-                                    rub_str = f"{p['rub']:,.4f} ₽"
-                                else:
-                                    rub_str = f"{p['rub']:.6f} ₽"
-
-                                if p['uzs'] >= 1000:
-                                    uzs_str = f"{int(round(p['uzs'])):,} so'm"
-                                elif p['uzs'] >= 1:
-                                    uzs_str = f"{p['uzs']:,.2f} so'm"
-                                else:
-                                    uzs_str = f"{p['uzs']:.4f} so'm"
-
-                                nm = p.get('name')
-                                title = f"{line['emoji']} <b>{line['coin']}</b>" + (f" ({nm})" if nm and nm.upper() != line['coin'] else "")
-                                message_text += title + "\n"
-                                message_text += f"   💵 {usd_str}\n"
-
-                                if line['change'] is not None:
-                                    message_text += f"   📊 {line['sign']}{line['change']:.2f}%\n"
-
-                                message_text += f"   🇺🇿 {uzs_str}\n"
-                                message_text += f"   🇷🇺 {rub_str}\n\n"
-
-                            message_text += f"🕒 <i>Keyingi tekshirish: {interval_sec}s</i>"
-
-                            await bot.send_message(user_id, message_text, parse_mode="HTML")
+                            for chunk in _split_alerts(message_lines, interval_sec):
+                                try:
+                                    await bot.send_message(user_id, chunk, parse_mode="HTML")
+                                except TelegramRetryAfter as e:
+                                    logger.warning(f"FloodWait for user {user_id}, sleeping {e.retry_after}s")
+                                    await asyncio.sleep(e.retry_after)
+                                    await bot.send_message(user_id, chunk, parse_mode="HTML")
                             logger.info(f"✅ Sent {len(changes_detected)} price changes to user {user_id}")
                         else:
                             # O'zgarish yo'q - silent log
                             logger.debug(f"No changes for user {user_id}")
 
-                        # Keyingi tekshirish vaqti
-                        user_next_send[user_id] = current_time + timedelta(seconds=interval_sec)
+                        # Keyingi tekshirish vaqti (fresh timestamp asosida)
+                        user_next_send[user_id] = datetime.now() + timedelta(seconds=interval_sec)
 
-                    except Exception as e:
-                        logger.error(f"Error for user {user_id}: {e}")
-                        user_next_send[user_id] = current_time + timedelta(minutes=5)
+                except (TelegramForbiddenError, TelegramBadRequest) as e:
+                    # Bloklagan/o'chirilgan user: uzoq backoff, log spam yo'q
+                    logger.warning(f"Unreachable user {user_id}, backing off: {e}")
+                    user_next_send[user_id] = datetime.now() + DEAD_USER_BACKOFF
+                except TelegramNetworkError as e:
+                    logger.error(f"Network error for user {user_id}: {e}")
+                    user_next_send[user_id] = datetime.now() + timedelta(minutes=5)
+                except Exception as e:
+                    logger.error(f"Error for user {user_id}: {e}")
+                    user_next_send[user_id] = datetime.now() + timedelta(minutes=5)
 
-            await asyncio.gather(
-                *(_process_user(u, iv, cl, lm) for u, iv, cl, lm in due_users)
+            results = await asyncio.gather(
+                *(_process_user(u, iv, cl, lm) for u, iv, cl, lm in due_users),
+                return_exceptions=True,
             )
+            for res in results:
+                if isinstance(res, BaseException) and not isinstance(res, asyncio.CancelledError):
+                    logger.error(f"Scheduler user task failed: {res!r}")
+                elif isinstance(res, asyncio.CancelledError):
+                    raise res
             
         except Exception as e:
             logger.error(f"Scheduler error: {e}")
