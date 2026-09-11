@@ -12,6 +12,7 @@ from aiogram.exceptions import (
 )
 from loader import bot, db
 from utils.api.crypto import get_real_prices
+from utils.format import format_alert_block
 
 logger = logging.getLogger(__name__)
 
@@ -30,55 +31,13 @@ MAX_MESSAGE_LEN = 3500
 DEAD_USER_BACKOFF = timedelta(hours=6)
 
 
-def _format_coin_block(line):
-    """Bitta coin uchun xabar bloki (matn)."""
-    p = line['price']
-
-    # main.py format_price() bilan bir xil mantik -
-    # display consistency uchun (accuracy yo'qolmasligi uchun)
-    if p['usd'] >= 1:
-        usd_str = f"${p['usd']:,.2f}"
-    elif p['usd'] >= 0.01:
-        usd_str = f"${p['usd']:,.4f}"
-    elif p['usd'] >= 0.0001:
-        usd_str = f"${p['usd']:,.6f}"
-    else:
-        usd_str = f"${p['usd']:.8f}"
-
-    if p['rub'] >= 1:
-        rub_str = f"{p['rub']:,.2f} ₽"
-    elif p['rub'] >= 0.01:
-        rub_str = f"{p['rub']:,.4f} ₽"
-    else:
-        rub_str = f"{p['rub']:.6f} ₽"
-
-    if p['uzs'] >= 1000:
-        uzs_str = f"{int(round(p['uzs'])):,} so'm"
-    elif p['uzs'] >= 1:
-        uzs_str = f"{p['uzs']:,.2f} so'm"
-    else:
-        uzs_str = f"{p['uzs']:.4f} so'm"
-
-    nm = p.get('name')
-    title = f"{line['emoji']} <b>{line['coin']}</b>" + (f" ({nm})" if nm and nm.upper() != line['coin'] else "")
-    block = title + "\n"
-    block += f"   💵 {usd_str}\n"
-
-    if line['change'] is not None:
-        block += f"   📊 {line['sign']}{line['change']:.2f}%\n"
-
-    block += f"   🇺🇿 {uzs_str}\n"
-    block += f"   🇷🇺 {rub_str}\n\n"
-    return block
-
-
 def _split_alerts(message_lines, interval_sec):
     """4096 limitdan oshmasligi uchun xabarlarni chunk'larga bo'lish."""
     header = "📊 <b>Narx o'zgarishlari</b>\n\n"
     footer = f"🕒 <i>Keyingi tekshirish: {interval_sec}s</i>"
     chunks, cur = [], header
     for line in message_lines:
-        block = _format_coin_block(line)
+        block = format_alert_block(line)
         if len(cur) + len(block) > MAX_MESSAGE_LEN and len(cur) > len(header):
             chunks.append(cur)
             cur = header

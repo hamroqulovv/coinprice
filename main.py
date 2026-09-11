@@ -12,6 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loader import bot, dp, db
 from utils.api.crypto import get_real_prices, suggest_coins
+from utils.format import format_price
 import re
 
 COIN_RE = re.compile(r"^[A-Z0-9][A-Z0-9\-]{0,19}$")
@@ -65,44 +66,6 @@ def is_admin(user_id):
         return user_id == PRIMARY_ADMIN or user_id in (ADMINS or [])
     except Exception:
         return user_id == PRIMARY_ADMIN
-
-
-def format_price(value, currency='USD'):
-    """Format small prices with adaptive precision to avoid 0.0000 output.
-    currency: 'USD', 'RUB', or 'UZS'
-    """
-    try:
-        v = float(value)
-    except Exception:
-        return "N/A"
-
-    # USD formatting
-    if currency == 'USD':
-        if v >= 1:
-            return f"${v:,.2f}"
-        if v >= 0.01:
-            return f"${v:,.4f}"
-        if v >= 0.0001:
-            return f"${v:,.6f}"
-        return f"${v:.8f}"
-
-    # RUB formatting
-    if currency == 'RUB':
-        if v >= 1:
-            return f"{v:,.2f} ₽"
-        if v >= 0.01:
-            return f"{v:,.4f} ₽"
-        return f"{v:.6f} ₽"
-
-    # UZS formatting (correct thousands separator, incl. negatives)
-    if currency == 'UZS':
-        if abs(v) >= 1000:
-            return f"{int(round(v)):,} so'm"
-        if abs(v) >= 1:
-            return f"{v:,.2f} so'm"
-        return f"{v:.4f} so'm"
-
-    return str(value)
 
 # ==================== START & REGISTRATION ====================
 @dp.message(Command("start"))
