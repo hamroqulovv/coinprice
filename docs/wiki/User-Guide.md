@@ -41,10 +41,10 @@ The **🔔 Avto-xabardorlik** screen shows your alert interval (e.g. `10s`), how
 
 How alerts work:
 
-- The bot re-checks your coins on your interval (minimum **40 seconds**).
+- The bot re-checks your coins on your interval (minimum **10 seconds**).
 - You get a message **only when a price changed ≥ 0.01%** since the last check — no spam when the market is flat.
 - Each alert shows the new price in all three currencies plus the change percent (📈/📉).
-- You can change the interval anytime (minimum **40 seconds**).
+- You can change the interval anytime (minimum **10 seconds**).
 
 ## 4. Profile (👤)
 

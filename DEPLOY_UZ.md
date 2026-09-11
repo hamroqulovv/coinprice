@@ -5,9 +5,10 @@ Bu fayl loyihani serverga joylashtirish uchun qadam-baqadam koʻrsatmalarni o'z 
 ---
 
 ## 🔰 Talablar
-- Server (Ubuntu 20.04+ tavsiya etiladi)
+- Server (Ubuntu 22.04+ tavsiya etiladi — 20.04 da Python 3.11 uchun deadsnakes kerak bo'ladi)
 - Docker va Docker Compose plagin yoki `docker-compose` (docker compose plugin)
 - Loyihaning ildizida `.env` fayli mavjud bo'lishi kerak ( `.env.example` dan nusxa olib to'ldiring )
+- Systemd usulida: `/opt/crypto-bot/venv` virtual muhit (service fayl venv python'ni ishlatadi)
 
 ---
 
@@ -77,6 +78,8 @@ cp .env.example .env
 2) Docker Compose (tavsiya):
 ```bash
 # Loyihaning ildizida (crypto_bot/):
+# DIQQAT: avval bo'sh fayl yarating, bo'lmasa Docker uni papka qilib yaratadi:
+touch main.db
 docker compose up -d --build
 ```
 
@@ -148,10 +151,4 @@ journalctl -u crypto-bot -f
 ## ℹ️ Muhim eslatmalar
 - Cloud Run yoki Heroku kabi platformalarda fayl tizimi ephemeraldir — SQLite mos emas. Agar siz bulut xizmatida barqaror ishlashni xohlasangiz, tashqi DB (Postgres) ga o'tish va kodni moslashtirish tavsiya etiladi.
 - Doimiy monitoring va loglarni saqlashni tashkil qiling.
-
----
-
-Agar xohlasangiz, men:
-- `DEPLOY_UZ.md` ni qo'shdim — kerak bo'lsa uni kengaytirib, qo'shimcha ssenariylar (firewall, reverse proxy, SSL, webhook) ham yozib beraman.
-- Serverga Docker o'rnatish yoki `docker compose up` buyruqlarini men bilan bosqichma-bosqich bajarishingiz mumkin — xatolik yuz bersa, chiqishini bu yerga yuboring, men tahlil qilib yordam beraman.
 

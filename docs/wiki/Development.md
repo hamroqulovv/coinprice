@@ -9,7 +9,7 @@ data/config.py           # .env parsing (BOT_TOKEN, PRIMARY_ADMIN, ADMINS, CHANN
 utils/api/crypto.py      # price engine: median, resolver, fiat rates, caches
 utils/scheduler.py       # background alert loop (10s tick)
 utils/db_api/sqlite.py   # thin sqlite3 wrapper + migrations
-tests/                   # pytest suite (27 tests)
+tests/                   # pytest suite (46 tests)
 .github/workflows/       # CI: pytest on push/PR
 Dockerfile, docker-compose.yml, Procfile, deploy/crypto-bot.service
 ```

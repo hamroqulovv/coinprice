@@ -82,13 +82,14 @@ All settings live in `.env`:
 |---|---|---|
 | `BOT_TOKEN` | ✅ | Telegram bot token from [@BotFather](https://t.me/BotFather) |
 | `PRIMARY_ADMIN` | ✅ | Your Telegram numeric ID (owner of the admin panel) |
-| `ADMINS` | ✅ | Extra admin IDs, comma-separated |
+| `ADMINS` | ⬜ | Extra admin IDs, comma-separated without spaces (same access as owner) |
 | `CHANNELS` | ⬜ | Optional channel list |
 | `COINBASE_BASE_URL` | ⬜ | Override, default `https://api.coinbase.com/v2/prices` |
 | `BINANCE_URL` | ⬜ | Override, default `https://api.binance.com/api/v3/ticker/price` |
 | `COINGECKO_URL` | ⬜ | Override, default `https://api.coingecko.com/api/v3/simple/price` |
-| `UZS_RATE_URL` | ⬜ | Override, default CBU JSON endpoint |
-| `RUB_RATE_URL` | ⬜ | Override, default CBR JSON endpoint |
+| `UZS_RATE_URL` | ⬜ | Override, default `https://cbu.uz/uz/arkhiv-kursov-valyut/json/` |
+| `RUB_RATE_URL` | ⬜ | Override, default `https://www.cbr-xml-daily.ru/daily_json.js` |
+| `ER_API_URL` | ⬜ | Fallback fiat source, default `https://open.er-api.com/v6/latest/USD` |
 | `COINMARKETCAP_API_KEY` / `COINMARKETCAP_URL` | ⬜ | Adds CoinMarketCap as an extra price source |
 | `COINGECKO_API_KEY` | ⬜ | Free demo key from coingecko.com — raises rate limits so low-cap lookups throttle less |
 
