@@ -6,7 +6,6 @@ APIs again (this is what lets one scheduler tick serve all users with one
 fetch per distinct coin, and keeps manual lookups live).
 """
 import asyncio
-from datetime import timedelta
 from unittest.mock import patch
 
 import utils.api.crypto as crypto
@@ -26,10 +25,10 @@ def _clear():
 
 
 def test_source_ttls_fast_exchanges_live_slow_aggregators_cached():
-    assert crypto._SOURCE_TTLS["Binance"] <= timedelta(seconds=5)
-    assert crypto._SOURCE_TTLS["Bybit"] <= timedelta(seconds=5)
-    assert crypto._SOURCE_TTLS["Coinbase"] <= timedelta(seconds=5)
-    assert crypto._SOURCE_TTLS["CoinGecko"] >= timedelta(seconds=60)
+    assert crypto._SOURCE_TTLS["Binance"] <= 5.0
+    assert crypto._SOURCE_TTLS["Bybit"] <= 5.0
+    assert crypto._SOURCE_TTLS["Coinbase"] <= 5.0
+    assert crypto._SOURCE_TTLS["CoinGecko"] >= 60.0
 
 
 def test_usd_median_aggregates_mocked_sources():

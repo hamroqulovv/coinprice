@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+import time
 from statistics import median
 import os
 
@@ -48,24 +48,26 @@ _rate_cache = {
 # 5s TTL: qo'lda 10 marta tekshirishda ham jonli narx ko'rinadi.
 # Sekin agregatorlar (CoinGecko/CMC daqiqa-scale yangilanadi) - 60s TTL:
 # ularni tez-tez so'rashning foydasi yo'q, faqat rate-limit yeydi.
-_source_cache = {}  # (source, coin) -> {"res": (raw, name), "updated": datetime}
+_source_cache = {}  # (source, coin) -> {"res": (raw, name), "updated": monotonic float}
 _SOURCE_TTLS = {
-    "Binance": timedelta(seconds=5),
-    "Bybit": timedelta(seconds=5),
-    "Coinbase": timedelta(seconds=5),
-    "DexScreener": timedelta(seconds=5),
-    "CoinGecko": timedelta(seconds=60),
-    "CoinMarketCap": timedelta(seconds=60),
+    "Binance": 5.0,
+    "Bybit": 5.0,
+    "Coinbase": 5.0,
+    "DexScreener": 5.0,
+    "CoinGecko": 60.0,
+    "CoinMarketCap": 60.0,
 }
 _SOURCE_CACHE_MAX = 2000
-_name_cache = {}  # coin -> display name (restartgacha)
-# Gecko id cache: {"id": str|None, "name": str|None, "updated": datetime, "confirmed": bool}
+_name_cache = {}  # coin -> display name (restartgacha, capped below)
+_NAME_CACHE_MAX = 2000
+# Gecko id cache: {"id": str|None, "name": str|None, "updated": monotonic, "confirmed": bool}
 # - success (id set): permanent, mapping deyarli o'zgarmaydi
 # - confirmed not-found (200 + zero match): 1 soat (transient xatolar cache'lanmaydi)
 _gecko_search_cache = {}  # SYMBOL -> entry
+_GECKO_CACHE_MAX = 5000
 
-FIAT_TTL = timedelta(minutes=10)
-GECKO_NEG_TTL = timedelta(hours=1)
+FIAT_TTL = 600.0  # seconds (CBU/CBR kuniga 1 marta yangilanadi)
+GECKO_NEG_TTL = 3600.0  # seconds (confirmed not-found 1 soat)
 
 # CoinGecko free-tier pacing (strictest API we use: ~5-15 req/min).
 # Serialized calls with a minimum gap keep us under the limit.
@@ -76,22 +78,23 @@ _gecko_last_call = 0.0
 # Coin-level concurrency cap (respects free-tier rate limits)
 _COIN_SEMAPHORE = asyncio.Semaphore(5)
 
-# Shared aiohttp session (one per event loop)
+# Shared aiohttp session (one per event loop; owning loop tracked explicitly -
+# private _loop attr ishlatilmaydi).
 _SESSION = None
+_SESSION_LOOP = None
+
+# Per-key singleflight locks (cold-cache stampede himoyasi).
+# NOTE: asyncio primitives import-time yaratilgan; single-loop bot + ketma-ket
+# testlar uchun xavfsiz (contention faqat bir loop ichida bo'ladi).
+_key_locks = {}
+_key_locks_guard = asyncio.Lock()
 
 
 async def _session():
     """Lazy shared ClientSession, recreated if closed or on a new loop."""
-    global _SESSION
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if (
-        _SESSION is None
-        or _SESSION.closed
-        or getattr(_SESSION, "_loop", None) is not loop
-    ):
+    global _SESSION, _SESSION_LOOP
+    loop = asyncio.get_running_loop()
+    if _SESSION is None or _SESSION.closed or _SESSION_LOOP is not loop:
         if _SESSION is not None and not _SESSION.closed:
             try:
                 await _SESSION.close()
@@ -102,18 +105,20 @@ async def _session():
             timeout=aiohttp.ClientTimeout(total=10),
             connector=aiohttp.TCPConnector(limit=20),
         )
+        _SESSION_LOOP = loop
     return _SESSION
 
 
 async def close_http_session():
     """Close the shared session (shutdown / tests)."""
-    global _SESSION
+    global _SESSION, _SESSION_LOOP
     if _SESSION is not None and not _SESSION.closed:
         try:
             await _SESSION.close()
         except Exception:
             pass
     _SESSION = None
+    _SESSION_LOOP = None
 
 
 async def _fetch(url, params=None, extra_headers=None):
@@ -122,9 +127,11 @@ async def _fetch(url, params=None, extra_headers=None):
     Non-200 responses return (status, None). 429 honors Retry-After
     (capped) with up to 2 retries. CoinGecko calls are throttled.
     """
+    demo_headers = None
     if _GECKO_HOST in url:
-        await _throttle_gecko()
-        extra_headers = {**_gecko_demo_headers(), **(extra_headers or {})}
+        demo_headers = _gecko_demo_headers()
+        await _throttle_gecko(2.0 if demo_headers else 5.0)
+        extra_headers = {**demo_headers, **(extra_headers or {})}
 
     session = await _session()
     backoff = (5.0, 15.0)
@@ -162,17 +169,21 @@ def _gecko_demo_headers():
     return {}
 
 
-async def _throttle_gecko():
-    """Serialize CoinGecko calls with a minimum gap (free-tier pacing)."""
+async def _throttle_gecko(interval):
+    """Serialize CoinGecko calls with a minimum gap (free-tier pacing).
+
+    monotonic clock (NTP sakrashidan mustaqil); lock faqat hisoblash
+    uchun ushlanadi, sleep tashqarida - head-of-line blocking yo'q.
+    """
     global _gecko_last_call
-    interval = 2.0 if _gecko_demo_headers() else 5.0
-    async with _gecko_lock:
-        now = asyncio.get_running_loop().time()
-        wait = interval - (now - _gecko_last_call)
-        if wait > 0:
-            await asyncio.sleep(wait)
-            now = asyncio.get_running_loop().time()
-        _gecko_last_call = now
+    while True:
+        async with _gecko_lock:
+            now = time.monotonic()
+            wait = interval - (now - _gecko_last_call)
+            if wait <= 0:
+                _gecko_last_call = now
+                return
+        await asyncio.sleep(wait)
 
 
 def _get_env(name):
@@ -251,17 +262,36 @@ async def get_usd_median(coin):
         (get_from_coinmarketcap, "CoinMarketCap"),
     )
 
+    # Bitta normalizatsiya: quyi registr/bo'shliq/$ farqi alohida
+    # cache key va alohida HTTP call yaratmaydi.
+    coin = coin.upper().strip().lstrip("$")
+
     async def _cached(fn, name):
         key = (name, coin)
         entry = _source_cache.get(key)
-        ttl = _SOURCE_TTLS.get(name, timedelta(seconds=5))
-        if entry and (datetime.now() - entry["updated"]) < ttl:
+        ttl = _SOURCE_TTLS.get(name, 5.0)
+        if entry and (time.monotonic() - entry["updated"]) < ttl:
             return entry["res"]
-        res = await fn(coin)
-        if len(_source_cache) >= _SOURCE_CACHE_MAX:
-            _source_cache.clear()
-        _source_cache[key] = {"res": res, "updated": datetime.now()}
-        return res
+        # Singleflight: parallel sovuq so'rovlar bitta HTTP'da birlashadi.
+        async with _key_locks_guard:
+            lock = _key_locks.setdefault(key, asyncio.Lock())
+        try:
+            async with lock:
+                entry = _source_cache.get(key)
+                if entry and (time.monotonic() - entry["updated"]) < ttl:
+                    return entry["res"]
+                res = await fn(coin)
+                # Miss (None,None) cache'lanmaydi - outage'dan keyin
+                # keyingi tick darhol qayta urinadi.
+                if res and res[0] is not None:
+                    if len(_source_cache) >= _SOURCE_CACHE_MAX:
+                        _source_cache.clear()
+                    _source_cache[key] = {"res": res, "updated": time.monotonic()}
+                return res
+        finally:
+            async with _key_locks_guard:
+                if not lock.locked():
+                    _key_locks.pop(key, None)
 
     # Mustaqil manbalar parallel so'raladi (fresh bo'lmaganlari cache'dan)
     results = await asyncio.gather(
@@ -342,6 +372,8 @@ async def get_usd_median(coin):
     sources = "+".join(sorted({s for _, s in pool}))
 
     if display_name:
+        if len(_name_cache) >= _NAME_CACHE_MAX:
+            _name_cache.clear()
         _name_cache[coin] = display_name
     return final, sources
 
@@ -359,6 +391,7 @@ async def get_from_coinbase(coin):
     RUB har doim USD * CBR dan hisoblanadi.
     https://api.coinbase.com/v2/prices/{coin}-USD/spot
     """
+    coin = coin.upper().strip().lstrip("$")
     try:
         base = _get_env("COINBASE_BASE_URL")
         status, data_usd = await _fetch(f"{base}/{coin}-USD/spot")
@@ -381,6 +414,7 @@ async def get_from_coinmarketcap(coin):
     CoinMarketCap API - aggregated VWAP, eng aniq "bozor" narxi.
     API kalit talab qiladi; kalit bo'lmasa skip.
     """
+    coin = coin.upper().strip().lstrip("$")
     try:
         # Check for API key
         api_key = _get_env("COINMARKETCAP_API_KEY")
@@ -538,6 +572,7 @@ async def get_from_binance(coin):
     Binance Spot API - eng likvid bozor (real-time trade narxi).
     USDT juftlik ~ USD, farq 0.1% atrofida - median ichida tekislanadi.
     """
+    coin = coin.upper().strip().lstrip("$")
     try:
         url = _get_env("BINANCE_URL")
 
@@ -570,6 +605,7 @@ async def get_from_bybit(coin):
     Free, no key: GET /v5/market/tickers?category=spot&symbol={COIN}USDT
     TON kabi delisted/rename coinlarda "Not supported" qaytarsa skip.
     """
+    coin = coin.upper().strip().lstrip("$")
     try:
         symbols_to_try = BINANCE_SYMBOL_FALLBACKS.get(
             coin, [f"{coin}USDT"]
@@ -598,6 +634,7 @@ async def get_from_coingecko(coin):
     """
     CoinGecko API - aggregated fallback manba.
     """
+    coin = coin.upper().strip().lstrip("$")
 
     # Coinlarning CoinGecko ID mapping (yangilangan)
     COIN_IDS = {
@@ -709,7 +746,7 @@ async def resolve_coingecko_id(symbol):
         sym = (symbol or "").upper().strip().lstrip("$")
         if not sym:
             return None
-        now = datetime.now()
+        now = time.monotonic()
         cached = _gecko_search_cache.get(sym)
         if cached:
             if cached.get("id"):
@@ -725,6 +762,8 @@ async def resolve_coingecko_id(symbol):
         coins = data.get("coins", []) or []
         exact = [c for c in coins if str(c.get("symbol", "")).upper() == sym]
         if not exact:
+            if len(_gecko_search_cache) >= _GECKO_CACHE_MAX:
+                _gecko_search_cache.clear()
             _gecko_search_cache[sym] = {"id": None, "name": None, "updated": now, "confirmed": True}
             return None
 
@@ -736,6 +775,8 @@ async def resolve_coingecko_id(symbol):
         coin_id = best.get("id") or None
         if not coin_id:
             return None  # malformed - cache'lanmaydi
+        if len(_gecko_search_cache) >= _GECKO_CACHE_MAX:
+            _gecko_search_cache.clear()
         _gecko_search_cache[sym] = {
             "id": coin_id,
             "name": best.get("name") or best.get("symbol"),
@@ -845,7 +886,7 @@ async def get_uzs_rate():
     """
     global _rate_cache
 
-    now = datetime.now()
+    now = time.monotonic()
     cache = _rate_cache["uzs"]
 
     # Cache yangimi?
@@ -891,7 +932,7 @@ async def get_rub_rate():
     """
     global _rate_cache
 
-    now = datetime.now()
+    now = time.monotonic()
     cache = _rate_cache["rub"]
 
     if cache["updated"] and (now - cache["updated"]) < FIAT_TTL:
