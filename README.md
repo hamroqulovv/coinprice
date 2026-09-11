@@ -110,7 +110,13 @@ CHANNELS=""
 ---
 
 ## 🧪 Test & Kod sifati
-- Joriy loyiha avtomatik testlarni o'z ichiga olmaydi; Qo'shmoqchi bo'lsangiz `pytest` va CI workflow qo'shishni taklif qilaman.
+- Unit testlar `tests/` papkasida (`pytest`): `format_price`, `calculate_price_change`, narx keshi.
+- Testlarni ishga tushirish:
+```bash
+pip install -r requirements.txt pytest
+python -m pytest -q
+```
+- Har bir push/PR da testlar avtomatik ishlaydi (`.github/workflows/tests.yml`).
 - Kod formatlash: `black` va `flake8` tavsiya etiladi.
 
 ---
