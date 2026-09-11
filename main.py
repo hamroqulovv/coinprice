@@ -246,7 +246,15 @@ async def add_watchlist(callback: types.CallbackQuery):
 
     coin = callback.data.split("_")[1]
     try:
-        db.execute("INSERT INTO CryptoPreferences (user_id, coin_symbol) VALUES (?, ?)",
+        exists = db.execute(
+            "SELECT 1 FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
+            (callback.from_user.id, coin), fetchone=True)
+        if exists:
+            await callback.answer(f"✅ {coin} allaqachon kuzatuvda!", show_alert=True)
+            return
+        # INSERT OR IGNORE: ikki marta tez bosilgandagi race'dan himoya
+        # (DB'dagi UNIQUE(user_id, coin_symbol) duplicate yozuvni bloklaydi)
+        db.execute("INSERT OR IGNORE INTO CryptoPreferences (user_id, coin_symbol) VALUES (?, ?)",
                   (callback.from_user.id, coin), commit=True)
         await callback.answer(f"✅ {coin} qo'shildi!", show_alert=True)
         kb = InlineKeyboardBuilder()

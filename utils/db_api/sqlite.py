@@ -74,7 +74,8 @@ class Database:
             user_id INTEGER,
             coin_symbol TEXT,
             last_price REAL,
-            last_checked_at DATETIME
+            last_checked_at DATETIME,
+            UNIQUE(user_id, coin_symbol)
         );
         """
         self.execute(sql_prefs, commit=True)
@@ -85,6 +86,26 @@ class Database:
             pass
         try:
             self.execute("ALTER TABLE CryptoPreferences ADD COLUMN last_checked_at DATETIME", commit=True)
+        except Exception:
+            pass
+        # Mavjud DB'lardagi duplicate kuzatuvlarni tozalash
+        # (race'da ikki marta bosish bir xil (user, coin) ni 2 marta yozishi mumkin)
+        try:
+            self.execute("""
+                DELETE FROM CryptoPreferences WHERE rowid NOT IN (
+                    SELECT MAX(rowid) FROM CryptoPreferences GROUP BY user_id, coin_symbol
+                )
+            """, commit=True)
+        except Exception:
+            pass
+        # Mavjud DB'lar uchun uniqueness (yangi DB'da CREATE TABLE'dagi
+        # UNIQUE orqali allaqachon bor; IF NOT EXISTS tufayli idempotent)
+        try:
+            self.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_prefs_user_coin "
+                "ON CryptoPreferences(user_id, coin_symbol)",
+                commit=True,
+            )
         except Exception:
             pass
 
