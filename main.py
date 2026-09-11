@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sqlite3
 from aiogram import types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -19,7 +20,7 @@ COIN_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-_$]{0,14}$")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-from data.config import PRIMARY_ADMIN
+from data.config import PRIMARY_ADMIN, ADMINS
 MIN_INTERVAL = 10
 
 # ==================== STATES ====================
@@ -38,7 +39,7 @@ class CoinSearch(StatesGroup):
 def main_menu(user_id):
     kb = [[KeyboardButton(text="📊 Narxlarni ko'rish")],
           [KeyboardButton(text="🔔 Avto-xabardorlik"), KeyboardButton(text="👤 Profile")]]
-    if user_id == PRIMARY_ADMIN:
+    if is_admin(user_id):
         kb.append([KeyboardButton(text="👨‍💼 USERS Admin Panel")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -48,6 +49,14 @@ def back_keyboard():
 def is_registered(user_id):
     """Return True if the user exists in the Users table."""
     return bool(db.execute("SELECT 1 FROM Users WHERE id=?", (user_id,), fetchone=True))
+
+
+def is_admin(user_id):
+    """PRIMARY_ADMIN + ADMINS ro'yxatidagi qo'shimcha adminlar."""
+    try:
+        return user_id == PRIMARY_ADMIN or user_id in (ADMINS or [])
+    except Exception:
+        return user_id == PRIMARY_ADMIN
 
 
 def format_price(value, currency='USD'):
@@ -219,7 +228,7 @@ async def add_watchlist(callback: types.CallbackQuery):
         await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
         return
 
-    coin = callback.data.split("_")[1]
+    coin = callback.data.split("_", 1)[1]
     try:
         exists = db.execute(
             "SELECT 1 FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
@@ -234,7 +243,11 @@ async def add_watchlist(callback: types.CallbackQuery):
         await callback.answer(f"✅ {coin} qo'shildi!", show_alert=True)
         kb = InlineKeyboardBuilder()
         kb.button(text="✅ Kuzatuvda", callback_data=f"watching_{coin}")
-        await callback.message.edit_reply_markup(reply_markup=kb.as_markup())
+        try:
+            await callback.message.edit_reply_markup(reply_markup=kb.as_markup())
+        except TelegramBadRequest as e:
+            if "message is not modified" not in str(e).lower():
+                raise
     except sqlite3.IntegrityError:
         logger.info(f"Watchlist duplicate: user {callback.from_user.id} already watches {coin}")
         await callback.answer(f"✅ {coin} allaqachon kuzatuvda!", show_alert=True)
@@ -252,10 +265,11 @@ async def auto_notify(message: types.Message):
     if not is_registered(message.from_user.id):
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
 
-    coins = db.execute("SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?", 
+    coins = db.execute("SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?",
                       (message.from_user.id,), fetchall=True)
-    interval = db.execute("SELECT interval_min FROM Users WHERE id=?", 
-                         (message.from_user.id,), fetchone=True)[0] or MIN_INTERVAL
+    row = db.execute("SELECT interval_min FROM Users WHERE id=?",
+                     (message.from_user.id,), fetchone=True)
+    interval = (row[0] if row and row[0] else MIN_INTERVAL)
     
     text = "<b>🔔 Avto-xabardorlik</b>\n\n"
     if not coins:
@@ -278,11 +292,20 @@ async def remove_coin(callback: types.CallbackQuery):
         await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
         return
 
-    coin = callback.data.split("_")[1]
-    db.execute("DELETE FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
-              (callback.from_user.id, coin), commit=True)
-    await callback.answer(f"✅ {coin} o'chirildi!")
-    await callback.message.delete()
+    coin = callback.data.split("_", 1)[1]
+    try:
+        db.execute("DELETE FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
+                  (callback.from_user.id, coin), commit=True)
+        await callback.answer(f"✅ {coin} o'chirildi!")
+    except sqlite3.Error as e:
+        logger.error(f"Watchlist delete error for user {callback.from_user.id}, coin {coin}: {e}")
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
+    try:
+        if callback.message:
+            await callback.message.delete()
+    except TelegramBadRequest:
+        pass  # allaqachon o'chirilgan (ikki marta bosish)
 
 # ==================== PROFILE ====================
 @dp.message(F.text == "👤 Profile")
@@ -317,6 +340,12 @@ async def profile(message: types.Message):
 
 @dp.callback_query(F.data == "edit_name")
 async def edit_name(callback: types.CallbackQuery, state: FSMContext):
+    if not is_registered(callback.from_user.id):
+        await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
     await callback.message.answer("📝 Yangi ismingizni kiriting:", reply_markup=back_keyboard())
     await state.set_state(EditProfile.name)
     await callback.answer()
@@ -333,6 +362,12 @@ async def update_name(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "edit_interval")
 async def edit_interval(callback: types.CallbackQuery, state: FSMContext):
+    if not is_registered(callback.from_user.id):
+        await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
+        return
+    if not callback.message:
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
     await state.clear()
     await callback.message.answer(f"🕒 Yangi intervalni soniyada kiriting (min: {MIN_INTERVAL}s):", reply_markup=back_keyboard())
     await state.set_state(EditProfile.interval)
@@ -381,7 +416,7 @@ def _admin_page_keyboard(page: int):
 
 @dp.message(F.text == "👨‍💼 USERS Admin Panel")
 async def admin_panel(message: types.Message):
-    if message.from_user.id != PRIMARY_ADMIN:
+    if not is_admin(message.from_user.id):
         return
 
     markup, total, page, pages = _admin_page_keyboard(0)
@@ -389,7 +424,7 @@ async def admin_panel(message: types.Message):
 
 @dp.callback_query(F.data.startswith("admin_users_"))
 async def admin_panel_page(callback: types.CallbackQuery):
-    if callback.from_user.id != PRIMARY_ADMIN:
+    if not is_admin(callback.from_user.id):
         await callback.answer()
         return
     try:
@@ -397,12 +432,24 @@ async def admin_panel_page(callback: types.CallbackQuery):
     except (ValueError, IndexError):
         page = 0
     markup, total, page, pages = _admin_page_keyboard(page)
-    await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+    try:
+        await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+    except TelegramBadRequest as e:
+        # Ikkita tez bosishda xabar o'zgarmagan bo'lishi mumkin
+        if "message is not modified" not in str(e).lower():
+            raise
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("user_"))
 async def manage_user(callback: types.CallbackQuery):
-    uid = int(callback.data.split("_")[1])
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    try:
+        uid = int(callback.data.split("_", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Invalid callback data", show_alert=True)
+        return
     # Select explicit columns to avoid confusion if DB schema changes
     u = db.execute(
         "SELECT id, full_name, phone, username, interval_min, view_count FROM Users WHERE id=?",
@@ -429,11 +476,27 @@ async def manage_user(callback: types.CallbackQuery):
     kb.button(text="🔙 Back", callback_data="back_admin")
     kb.adjust(1)
 
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+    await callback.answer()
 
 @dp.callback_query(F.data == "back_admin")
 async def back_admin(callback: types.CallbackQuery):
-    await callback.message.delete()
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    # Ro'yxatning birinchi sahifasiga qaytish (o'chirish o'rniga -
+    # paginatsiya yo'qolmaydi, ikkinchi bosish crash qilmaydi)
+    markup, total, page, pages = _admin_page_keyboard(0)
+    try:
+        await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+    await callback.answer()
 
 # ==================== BACK TO MAIN ====================
 @dp.message(F.text == "🏠 Asosiy menyu")
