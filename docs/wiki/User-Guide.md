@@ -15,6 +15,7 @@ Main menu buttons:
 | 📊 Narxlarni ko'rish | Price search |
 | 🔔 Avto-xabardorlik | Watchlist & alert interval |
 | 👤 Profile | Profile and settings |
+| 🆘 Yordam | Help + admin contact (@hamroqulovv) |
 | 👨‍💼 USERS Admin Panel | Admin only (see [Admin Guide](Admin-Guide.md)) |
 
 ## 2. Checking a price (📊)

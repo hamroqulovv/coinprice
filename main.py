@@ -23,6 +23,7 @@ MENU_BUTTONS = frozenset({
     "📊 Narxlarni ko'rish",
     "🔔 Avto-xabardorlik",
     "👤 Profile",
+    "🆘 Yordam",
     "👨‍💼 USERS Admin Panel",
 })
 
@@ -46,7 +47,8 @@ class CoinSearch(StatesGroup):
 
 # ==================== KEYBOARDS ====================
 def main_menu(user_id):
-    kb = [[KeyboardButton(text="🔔 Avto-xabardorlik"), KeyboardButton(text="👤 Profile")]]
+    kb = [[KeyboardButton(text="🔔 Avto-xabardorlik"), KeyboardButton(text="👤 Profile")],
+          [KeyboardButton(text="🆘 Yordam")]]
     if is_admin(user_id):
         kb.append([KeyboardButton(text="👨‍💼 USERS Admin Panel")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
@@ -190,7 +192,7 @@ async def search_coin(message: types.Message, state: FSMContext):
         safe_coin = html.escape(coin, quote=False)
         title = f"💰 <b>{safe_coin}</b>" + (f" <i>({html.escape(coin_name, quote=False)})</i>" if coin_name and coin_name.upper() != coin else "")
 
-        text = f"{title}\n\n💵 <b>USD:</b> <code>{usd_str}</code>\n🇷🇺 <b>RUB:</b> <code>{rub_str}</code>\n🇺🇿 <b>UZS:</b> <code>{uzs_str}</code>"
+        text = f"{title}\n▬▬▬▬▬▬▬▬▬▬▬▬▬\n💵 <b>USD:</b> <code>{usd_str}</code>\n🇷🇺 <b>RUB:</b> <code>{rub_str}</code>\n🇺🇿 <b>UZS:</b> <code>{uzs_str}</code>"
         # Yagona manbali (ekzotik) coinlar uchun ogohlantirish
         src = (d.get('source') or '')
         if src and '+' not in src:
@@ -496,6 +498,23 @@ async def back_admin(callback: types.CallbackQuery):
         if "message is not modified" not in str(e).lower():
             raise
     await callback.answer()
+
+# ==================== SUPPORT ====================
+@dp.message(F.text == "🆘 Yordam")
+async def support(message: types.Message):
+    text = (
+        "🆘 <b>Yordam</b>\n\n"
+        "Savol yoki muammo bo'lsa admin bilan bog'laning:\n"
+        "👤 Admin: @hamroqulovv\n\n"
+        "❓ <b>Ko'p so'raladiganlar:</b>\n"
+        "• Narx topilmasa — ticker imlosini tekshiring\n"
+        "• Bildirishnoma kelmasa — 🔔 Avto-xabardorlik bo'limini tekshiring\n"
+        "• Bot ishlamasa — /start ni qayta yuboring"
+    )
+    if is_registered(message.from_user.id):
+        await message.answer(text, parse_mode="HTML", reply_markup=main_menu(message.from_user.id))
+    else:
+        await message.answer(text, parse_mode="HTML")
 
 # ==================== BACK TO MAIN ====================
 @dp.message(F.text == "🏠 Asosiy menyu")
