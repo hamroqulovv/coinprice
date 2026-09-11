@@ -81,11 +81,11 @@ def format_price(value, currency='USD'):
             return f"{v:,.4f} ₽"
         return f"{v:.6f} ₽"
 
-    # UZS formatting (show integer part if large)
+    # UZS formatting (correct thousands separator, incl. negatives)
     if currency == 'UZS':
-        if v >= 1000:
+        if abs(v) >= 1000:
             return f"{int(round(v)):,} so'm"
-        if v >= 1:
+        if abs(v) >= 1:
             return f"{v:,.2f} so'm"
         return f"{v:.4f} so'm"
 
