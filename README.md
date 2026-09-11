@@ -1,71 +1,136 @@
-# CoinPrice Bot
+# 🪙 CoinPrice Bot
 
-Telegram bot that shows crypto prices in **USD / RUB / UZS** and sends automatic price-change alerts. Built with Python + aiogram 3, SQLite storage, Docker-ready.
+<p align="center">
+  <strong>Live crypto prices in USD / RUB / UZS, right inside Telegram.</strong><br>
+  Watchlist alerts · Premium subscriptions · Admin panel
+</p>
 
-## Features
-- **Any coin/token lookup** — prices aggregated as the median of Binance, Bybit, Coinbase, CoinGecko (+ CoinMarketCap if key set), with CoinGecko search and DexScreener fallback for long-tail tokens. Outliers are filtered automatically.
-- **Three currencies** — USD market price × official fiat rates (UZS via CBU, RUB via CBR, each with fallback source and 10-min cache).
-- **Watchlist + auto-notify** — users subscribe to coins; the scheduler checks every 20s and messages only when a price moves ≥0.01% (per-user interval, min 40s).
-- **Registration** — phone-number onboarding, profile with editable name/interval.
-- **Free limit** — 5 lookups/day for free users; premium removes the limit.
-- **Premium** — manual card payment, screenshot sent to admin for approval.
-- **Admin panel** — paginated user list, per-user details, give/remove premium.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/aiogram-3.4.1-green" alt="aiogram 3.4.1">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-orange" alt="GPL-3.0">
+  <img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker ready">
+</p>
 
-## Price sources
-- Lookup order per coin: **Binance → Bybit → Coinbase → CoinGecko → DexScreener** (+ CoinMarketCap if key set); the median of all successful sources wins, outliers are dropped.
-- Well-known tickers use a hardcoded CoinGecko-id fast path (no extra call). Unknown tickers are resolved dynamically via CoinGecko `/search` (exact symbol match, lowest `market_cap_rank` wins; result cached permanently, confirmed misses cached 1 hour).
-- A coin can still be "not found" if it is listed nowhere supported or its ticker is ambiguous/misspelled — the bot suggests similar symbols in that case.
-- CoinGecko's free `/search` is rate-limited; the cache absorbs repeats, but a burst of many *distinct* new coins in a row can be throttled (the bot retries once, then skips that source for the tick).
+---
 
-## Tech
-- Python 3.11+, aiogram 3.4.1, aiohttp (async HTTP), SQLite (`main.db`)
-- Tests: pytest (`tests/`), CI on push/PR (`.github/workflows/tests.yml`)
+## 📖 Table of Contents
+- [✨ Features](#-features)
+- [💱 How prices work](#-how-prices-work)
+- [🚀 Quick start](#-quick-start)
+- [⚙️ Configuration](#️-configuration)
+- [🐳 Docker](#-docker)
+- [🧪 Tests](#-tests)
+- [🗄️ Database](#️-database)
+- [🔐 Security](#-security)
+- [📄 License](#-license)
 
-## Local run
+---
+
+## ✨ Features
+
+| Feature | Description |
+|---|---|
+| 🔍 **Any coin/token** | Look up thousands of coins — from BTC to the newest memecoins |
+| 💱 **3 currencies** | Every price shown in USD, RUB and UZS |
+| 🔔 **Smart alerts** | Subscribe to coins and get notified only when a price moves ≥ 0.01% |
+| 📝 **Profiles** | Phone-number onboarding, editable name and alert interval |
+| 💎 **Premium** | 5 free lookups/day — unlimited with premium (manual payment + admin approval) |
+| 🛠️ **Admin panel** | Paginated user list, per-user details, give/remove premium |
+
+---
+
+## 💱 How prices work
+
+1. **Multiple sources, one honest price.** Each coin is fetched in parallel from **Binance → Bybit → Coinbase → CoinGecko → DexScreener** (+ CoinMarketCap if you add a key). The **median** wins and outliers are dropped automatically — so one glitching exchange can't show you a wrong price.
+2. **Unknown tickers resolve themselves.** Popular coins use a built-in fast path; anything else is resolved live via CoinGecko search (exact symbol match, highest market-cap rank wins) and cached.
+3. **Real fiat rates.** UZS comes from Uzbekistan's Central Bank, RUB from Russia's Central Bank (each with a backup source, refreshed every 10 minutes).
+4. **Not found?** The bot suggests similar symbols — just check the exact ticker spelling.
+
+> ⚠️ CoinGecko's free search API is rate-limited: a burst of many *brand-new* coins in a row may be throttled (the bot retries once, then skips that source for the moment). Repeats are served from cache.
+
+---
+
+## 🚀 Quick start
+
 ```bash
-git clone <repo-url>
+git clone https://github.com/hamroqulovv/coinprice.git
 cd coinprice
+
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
-cp .env.example .env  # fill in values, see below
+
+cp .env.example .env            # fill in your values (see below)
 python main.py
 ```
 
-## Configuration (`.env`)
-| Var | Required | Description |
+You should see `🤖 Bot started!` in the logs — open your bot in Telegram and press **Start**.
+
+---
+
+## ⚙️ Configuration
+
+All settings live in `.env`:
+
+| Variable | Required | What it is |
 |---|---|---|
-| `BOT_TOKEN` | yes | Telegram bot token |
-| `PRIMARY_ADMIN` | yes | Main admin Telegram ID (single int) |
-| `ADMINS` | yes | Extra admin IDs, comma-separated |
-| `CHANNELS` | no | Optional channel list |
-| `COINBASE_BASE_URL` | no* | Default `https://api.coinbase.com/v2/prices` |
-| `BINANCE_URL` | no* | Default `https://api.binance.com/api/v3/ticker/price` |
-| `COINGECKO_URL` | no* | Default `https://api.coingecko.com/api/v3/simple/price` |
-| `UZS_RATE_URL` | no* | Default CBU JSON endpoint |
-| `RUB_RATE_URL` | no* | Default CBR JSON endpoint |
-| `COINMARKETCAP_API_KEY` / `COINMARKETCAP_URL` | no | Enables CoinMarketCap as an extra source |
+| `BOT_TOKEN` | ✅ | Telegram bot token from [@BotFather](https://t.me/BotFather) |
+| `PRIMARY_ADMIN` | ✅ | Your Telegram numeric ID (owner of the admin panel) |
+| `ADMINS` | ✅ | Extra admin IDs, comma-separated |
+| `CHANNELS` | ⬜ | Optional channel list |
+| `COINBASE_BASE_URL` | ⬜ | Override, default `https://api.coinbase.com/v2/prices` |
+| `BINANCE_URL` | ⬜ | Override, default `https://api.binance.com/api/v3/ticker/price` |
+| `COINGECKO_URL` | ⬜ | Override, default `https://api.coingecko.com/api/v3/simple/price` |
+| `UZS_RATE_URL` | ⬜ | Override, default CBU JSON endpoint |
+| `RUB_RATE_URL` | ⬜ | Override, default CBR JSON endpoint |
+| `COINMARKETCAP_API_KEY` / `COINMARKETCAP_URL` | ⬜ | Adds CoinMarketCap as an extra price source |
 
-\* Has a built-in default; set explicitly to override.
+⬜ = optional, has a working built-in default.
 
-## Docker
+---
+
+## 🐳 Docker
+
 ```bash
 docker compose up -d --build
 docker compose logs -f
 ```
-`main.db` is persisted via a host volume (see `docker-compose.yml`). For VM/systemd deploys see `deploy/crypto-bot.service`; full guides in `DEPLOY.md` / `DEPLOY_UZ.md`.
 
-## Tests
+`main.db` is persisted through a host volume (see `docker-compose.yml`).
+Running on a plain VM instead? Use the systemd unit in `deploy/crypto-bot.service`.
+Step-by-step guides: [`DEPLOY.md`](DEPLOY.md) · [`DEPLOY_UZ.md`](DEPLOY_UZ.md 🇺🇿)
+
+---
+
+## 🧪 Tests
+
 ```bash
 pip install -r requirements.txt pytest
 python -m pytest -q
 ```
 
-## Database
-SQLite `main.db` (auto-created on start via `db.create_tables()`): `Users` (profile, premium, limits) and `CryptoPreferences` (`UNIQUE(user_id, coin_symbol)`, last notified price for the scheduler).
+Tests live in `tests/` and run automatically on every push/PR via [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
 
-## Security
-Never commit `.env` or API keys. On ephemeral hosts (Heroku/Cloud Run) SQLite is lost — use an external DB.
+---
 
-## License
-GNU General Public License v3.0 — see `LICENSE`.
+## 🗄️ Database
+
+SQLite file `main.db`, created automatically on first start:
+
+- **`Users`** — profile, premium status, daily usage counters
+- **`CryptoPreferences`** — watchlist with `UNIQUE(user_id, coin_symbol)` and the last notified price (so restarts never re-spam old alerts)
+
+---
+
+## 🔐 Security
+
+- Never commit `.env` or API keys — both are git-ignored.
+- On ephemeral hosts (Heroku, Cloud Run) SQLite does not survive restarts — use an external database there.
+
+---
+
+## 📄 License
+
+GNU General Public License v3.0 — see [`LICENSE`](LICENSE).
