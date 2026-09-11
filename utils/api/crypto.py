@@ -186,7 +186,9 @@ async def get_real_prices(coins):
 
 
 async def get_usd_median(coin):
-    """Barcha manbalardan narx yig'ib medianani qaytaradi. Returns (price, sources_str)."""
+    """Barcha manbalardan narx yig'ib ishonchli medianani qaytaradi.
+    Returns (price, sources_str). Trust tiers: aggregated (Gecko/Coinbase/CMC)
+    > single-exchange (Binance/Bybit) > unverified DEX (last resort only)."""
     # Short crypto cache - same tick consistency + rate-limit protection
     now = datetime.now()
     cached = _crypto_cache.get(coin)
@@ -230,26 +232,55 @@ async def get_usd_median(coin):
     if not candidates:
         return None, None
 
-    prices = sorted(p for p, _ in candidates)
+    # Trust tiers (live-diagnosed 2026-09-11):
+    # TIER1 = aggregated venues (many exchanges averaged) - most truthful.
+    # TIER2 = single-exchange USDT quotes - can be stale/illiquid
+    #         (masalan: Binance TONUSDT 1.6 vs real 1.36).
+    # TIER3 = unverified DEX listings (DexScreener often picks a wrong
+    #         same-ticker token) - LAST RESORT only, never votes.
+    TIER1 = {"CoinGecko", "Coinbase", "CoinMarketCap"}
+    TIER2 = {"Binance", "Bybit"}
+
+    t1 = [(p, s) for p, s in candidates if s in TIER1]
+    t2 = [(p, s) for p, s in candidates if s in TIER2]
+    t3 = [(p, s) for p, s in candidates if s not in TIER1 and s not in TIER2]
+
+    if t1:
+        base = float(median(sorted(p for p, _ in t1)))
+        kept_t2 = []
+        for p, s in t2:
+            if base and abs(p - base) / base * 100 <= 2.0:
+                kept_t2.append((p, s))
+            else:
+                logger.warning(
+                    f"⚠️ {coin}: {s} {p} deviates from aggregated {base:.8f} - dropped")
+        pool = t1 + kept_t2
+    elif t2:
+        pool = t2
+        if len(pool) == 2:
+            (a, _), (b, _) = sorted(pool)
+            diff = abs(a - b) / a * 100 if a else 0
+            if diff > 2.0:
+                logger.warning(f"⚠️ {coin}: 2 source diverge {diff:.2f}%: {pool}")
+    else:
+        # Faqat DEX: tasdiqlanmagan narx (bot "taxminiy" deb ko'rsatadi)
+        pool = t3
+
+    if not pool:
+        return None, None
+
+    prices = sorted(p for p, _ in pool)
 
     if len(prices) == 1:
         final = prices[0]
-        sources = candidates[0][1]
-    elif len(prices) == 2:
-        # 2 manba >2% farq qilsa - ogohlantirish, median (=mean) olamiz
-        diff = abs(prices[0] - prices[1]) / prices[0] * 100 if prices[0] else 0
-        if diff > 2.0:
-            logger.warning(f"⚠️ {coin}: 2 source diverge {diff:.2f}%: {candidates}")
-        final = float(median(prices))
-        sources = "+".join(sorted({s for _, s in candidates}))
     else:
         m = float(median(prices))
         # Outlier >3% dan chetda bo'lsa - tashlab qayta median
         filtered = [p for p in prices if abs(p - m) / m * 100 <= 3.0] or prices
         if len(filtered) != len(prices):
-            logger.warning(f"⚠️ {coin}: outlier dropped: {candidates} -> median {m}")
+            logger.warning(f"⚠️ {coin}: outlier dropped: {pool} -> median {m}")
         final = float(median(filtered))
-        sources = "+".join(sorted({s for _, s in candidates}))
+    sources = "+".join(sorted({s for _, s in pool}))
 
     _crypto_cache[coin] = {"price": final, "sources": sources, "updated": now, "name": display_name}
     return final, sources

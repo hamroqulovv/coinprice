@@ -23,10 +23,10 @@ def test_usd_median_aggregates_mocked_sources():
     crypto._crypto_cache.clear()
     try:
         async def fake_binance(coin):
-            return 100.0, "Binance"
+            return 103.5, "Binance"
 
         async def fake_bybit(coin):
-            return 102.0, "Bybit"
+            return 104.5, "Bybit"
 
         async def fake_coinbase(coin):
             return {"usd": 104.0, "rub": None}, "Coinbase"
@@ -38,9 +38,52 @@ def test_usd_median_aggregates_mocked_sources():
              patch.object(crypto, "get_from_dexscreener", side_effect=_null_source), \
              patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
             price, sources = _run(crypto.get_usd_median("TST"))
-        # median(100, 102, 104) == 102
-        assert price == 102.0
+        # median(103.5, 104.0, 104.5) == 104.0 (all within trust tolerance)
+        assert price == 104.0
         assert "Binance" in sources and "Bybit" in sources and "Coinbase" in sources
+    finally:
+        crypto._crypto_cache.clear()
+
+
+def test_single_exchange_outlier_dropped():
+    """Binance stale quote far from aggregated venues must not win."""
+    crypto._crypto_cache.clear()
+    try:
+        async def stale_binance(coin):
+            return 1.60, "Binance"
+
+        async def true_coinbase(coin):
+            return {"usd": 1.37575, "rub": None}, "Coinbase"
+
+        with patch.object(crypto, "get_from_binance", side_effect=stale_binance), \
+             patch.object(crypto, "get_from_bybit", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coinbase", side_effect=true_coinbase), \
+             patch.object(crypto, "get_from_coingecko", side_effect=_null_source), \
+             patch.object(crypto, "get_from_dexscreener", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
+            price, sources = _run(crypto.get_usd_median("TON"))
+        assert price == 1.37575
+        assert "Binance" not in sources
+    finally:
+        crypto._crypto_cache.clear()
+
+
+def test_dex_only_last_resort():
+    """Unverified DEX price used only when nothing else answers."""
+    crypto._crypto_cache.clear()
+    try:
+        async def dex_only(coin):
+            return {"usd": 0.59, "name": "X"}, "DexScreener"
+
+        with patch.object(crypto, "get_from_binance", side_effect=_null_source), \
+             patch.object(crypto, "get_from_bybit", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coinbase", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coingecko", side_effect=_null_source), \
+             patch.object(crypto, "get_from_dexscreener", side_effect=dex_only), \
+             patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
+            price, sources = _run(crypto.get_usd_median("XXX"))
+        assert price == 0.59
+        assert sources == "DexScreener"
     finally:
         crypto._crypto_cache.clear()
 
