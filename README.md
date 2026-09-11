@@ -66,3 +66,6 @@ SQLite `main.db` (auto-created on start via `db.create_tables()`): `Users` (prof
 
 ## Security
 Never commit `.env` or API keys. On ephemeral hosts (Heroku/Cloud Run) SQLite is lost — use an external DB.
+
+## License
+GNU General Public License v3.0 — see `LICENSE`.
