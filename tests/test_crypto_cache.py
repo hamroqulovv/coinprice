@@ -148,3 +148,50 @@ def test_misses_are_not_cached():
             assert len(calls) == 2
     finally:
         _clear()
+
+
+def test_agreement_skips_slow_phase():
+    """Phase-1 agreement must NOT touch throttled Gecko/Dex at all."""
+    _clear()
+    try:
+        async def boom(coin):
+            raise AssertionError("slow phase must be skipped")
+
+        async def binance(coin):
+            return 100.0, "Binance"
+
+        async def bybit(coin):
+            return 100.5, "Bybit"
+
+        with patch.object(crypto, "get_from_binance", side_effect=binance), \
+             patch.object(crypto, "get_from_bybit", side_effect=bybit), \
+             patch.object(crypto, "get_from_coinbase", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coingecko", side_effect=boom), \
+             patch.object(crypto, "get_from_dexscreener", side_effect=boom), \
+             patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
+            price, sources = _run(crypto.get_usd_median("AGR"))
+        assert price == 100.25
+        assert sources == "Binance+Bybit"
+    finally:
+        _clear()
+
+
+def test_coin_timeout_returns_none(monkeypatch):
+    """Hung source must not stall the lookup past COIN_TIMEOUT."""
+    _clear()
+    monkeypatch.setattr(crypto, "COIN_TIMEOUT", 0.2)
+    try:
+        async def slow_median(coin):
+            await asyncio.sleep(60)
+            return 1.0, "Binance"
+
+        async def flat_fiat():
+            return 1.0
+
+        with patch.object(crypto, "get_usd_median", side_effect=slow_median), \
+             patch.object(crypto, "get_uzs_rate", side_effect=flat_fiat), \
+             patch.object(crypto, "get_rub_rate", side_effect=flat_fiat):
+            res = _run(crypto.get_real_prices(["HUNG"]))
+        assert res == [None]
+    finally:
+        _clear()

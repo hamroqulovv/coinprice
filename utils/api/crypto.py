@@ -105,7 +105,7 @@ async def _session():
         _SESSION = aiohttp.ClientSession(
             headers=HEADERS,
             timeout=aiohttp.ClientTimeout(total=10),
-            connector=aiohttp.TCPConnector(limit=20),
+            connector=aiohttp.TCPConnector(limit=20, ttl_dns_cache=300),
         )
         _SESSION_LOOP = loop
     return _SESSION
@@ -220,14 +220,19 @@ async def get_real_prices(coins):
     # Real valyuta kurslarini parallel yangilash (10 min cache + fallback chain)
     usd_to_uzs, usd_to_rub = await asyncio.gather(get_uzs_rate(), get_rub_rate())
 
-    logger.info(f"📊 Kurslar: 1 USD = {usd_to_uzs} UZS, {usd_to_rub} RUB")
+    logger.debug(f"📊 Kurslar: 1 USD = {usd_to_uzs} UZS, {usd_to_rub} RUB")
 
     async def _one(coin):
         coin = coin.upper().strip().lstrip("$")
         if not coin:
             return None
-        async with _COIN_SEMAPHORE:
-            price_usd, sources = await get_usd_median(coin)
+        try:
+            async with _COIN_SEMAPHORE:
+                price_usd, sources = await asyncio.wait_for(
+                    get_usd_median(coin), timeout=COIN_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(f"⏱️ {coin}: lookup timed out after {COIN_TIMEOUT}s")
+            return None
         if price_usd and price_usd > 0:
             # Full precision saqlaymiz - rounding faqat display da (format_price)
             price_uzs = price_usd * usd_to_uzs
@@ -235,7 +240,7 @@ async def get_real_prices(coins):
 
             usd_precision = 8 if price_usd < 0.01 else 4
 
-            logger.info(f"✅ {coin}: ${price_usd:.8f} ({sources})")
+            logger.debug(f"✅ {coin}: ${price_usd:.8f} ({sources})")
             return {
                 "usd": price_usd,  # Raw qiymat (median)
                 "usd_formatted": f"{price_usd:.{usd_precision}f}",
@@ -252,21 +257,16 @@ async def get_real_prices(coins):
     return list(await asyncio.gather(*(_one(c) for c in coins)))
 
 
+# Bitta coin lookup eng ko'pi shuncha kutadi (osilgan manba hammani to'xtatmaydi)
+COIN_TIMEOUT = 25.0
+
+
 async def get_usd_median(coin):
     """Barcha manbalardan narx yig'ib ishonchli medianani qaytaradi.
     Returns (price, sources_str). Trust tiers: aggregated (Gecko/Coinbase/CMC)
     > single-exchange (Binance/Bybit) > unverified DEX (last resort only).
     Har bir manba o'z TTL'ida cache'lanadi: tez birjalar 5s (jonli),
     sekin agregatorlar 60s (ular baribir daqiqada yangilanadi)."""
-    fetchers = (
-        (get_from_binance, "Binance"),
-        (get_from_bybit, "Bybit"),
-        (get_from_coinbase, "Coinbase"),
-        (get_from_coingecko, "CoinGecko"),
-        (get_from_dexscreener, "DexScreener"),
-        (get_from_coinmarketcap, "CoinMarketCap"),
-    )
-
     # Bitta normalizatsiya: quyi registr/bo'shliq/$ farqi alohida
     # cache key va alohida HTTP call yaratmaydi.
     coin = coin.upper().strip().lstrip("$")
@@ -298,30 +298,54 @@ async def get_usd_median(coin):
                 if not lock.locked():
                     _key_locks.pop(key, None)
 
-    # Mustaqil manbalar parallel so'raladi (fresh bo'lmaganlari cache'dan)
-    results = await asyncio.gather(
-        *(_cached(fn, name) for fn, name in fetchers), return_exceptions=True
-    )
+    async def _collect(fns):
+        """Berilgan fetcher'lardan (price, source) kandidatlar + nomlar."""
+        results = await asyncio.gather(
+            *(_cached(fn, name) for fn, name in fns), return_exceptions=True
+        )
+        cands, nms = [], {}
+        for (fn, name), res in zip(fns, results):
+            if isinstance(res, Exception):
+                logger.debug(f"{name} median collect error for {coin}: {res}")
+                continue
+            try:
+                raw, _ = res
+                # Normalize: dict {"usd":.., "name":..} vs float
+                if isinstance(raw, dict):
+                    price = raw.get("usd")
+                    if raw.get("name"):
+                        nms[name] = raw.get("name")
+                else:
+                    price = raw
+                if price and _is_sane_usd(price):
+                    cands.append((float(price), name))
+            except Exception as e:
+                logger.debug(f"{name} median collect error for {coin}: {e}")
+        return cands, nms
 
-    candidates = []  # list of (price, source_name)
-    names = {}  # source_name -> display name (faqat dict qaytarganlar)
-    for (fn, name), res in zip(fetchers, results):
-        if isinstance(res, Exception):
-            logger.debug(f"{name} median collect error for {coin}: {res}")
-            continue
-        try:
-            raw, _ = res
-            # Normalize: dict {"usd":.., "name":..} vs float
-            if isinstance(raw, dict):
-                price = raw.get("usd")
-                if raw.get("name"):
-                    names[name] = raw.get("name")
-            else:
-                price = raw
-            if price and _is_sane_usd(price):
-                candidates.append((float(price), name))
-        except Exception as e:
-            logger.debug(f"{name} median collect error for {coin}: {e}")
+    # Phase 1: tez + arzon manbalar. Kamida 2 tasi ±1% kelishsa -
+    # Phase 2 (throttle'li Gecko + Dex) chaqirilmaydi ham.
+    candidates, names = await _collect((
+        (get_from_binance, "Binance"),
+        (get_from_bybit, "Bybit"),
+        (get_from_coinbase, "Coinbase"),
+        (get_from_coinmarketcap, "CoinMarketCap"),
+    ))
+    if len(candidates) >= 2:
+        lo = min(p for p, _ in candidates)
+        hi = max(p for p, _ in candidates)
+        if lo and (hi - lo) / lo * 100 <= 1.0:
+            final = float(median(sorted(p for p, _ in candidates)))
+            sources = "+".join(sorted({s for _, s in candidates}))
+            return final, sources
+
+    # Phase 2: arbitraj manbalar, keyin to'liq tier logic.
+    c2, n2 = await _collect((
+        (get_from_coingecko, "CoinGecko"),
+        (get_from_dexscreener, "DexScreener"),
+    ))
+    candidates += c2
+    names.update(n2)
 
     if not candidates:
         return None, None

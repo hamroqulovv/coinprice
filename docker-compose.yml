@@ -10,4 +10,6 @@ services:
       - ./main.db:/app/main.db
       - ./data:/app/data
     restart: unless-stopped
+    # Kichik server himoyasi (bot ~100MB yeydi).
+    mem_limit: 350m
     # If you want to forward logs or expose a healthcheck port, add ports/healthcheck here

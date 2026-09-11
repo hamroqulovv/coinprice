@@ -13,6 +13,8 @@ Environment=PYTHONUNBUFFERED=1
 # NOTE: venv python ishlatiladi (system python'da aiogram yo'q bo'lishi mumkin).
 # Install: python3 -m venv /opt/crypto-bot/venv && /opt/crypto-bot/venv/bin/pip install -r /opt/crypto-bot/requirements.txt
 ExecStart=/opt/crypto-bot/venv/bin/python /opt/crypto-bot/main.py
+# Kichik server himoyasi: bot ~100MB yeydi, leak bo'lsa ham 350MB'dan oshmaydi.
+MemoryMax=350M
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
