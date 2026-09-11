@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/badge/docker-ready-blue" alt="Docker ready">
 </p>
 
+<p align="center">
+  📚 <strong>Full documentation: <a href="docs/wiki/Home.md">docs/wiki</a></strong>
+</p>
+
 ---
 
 ## 📖 Table of Contents
