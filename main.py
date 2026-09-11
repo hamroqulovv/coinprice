@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import os
 import sqlite3
 from aiogram import types, F
 from aiogram.exceptions import TelegramBadRequest
@@ -540,7 +541,24 @@ async def main():
     from utils.scheduler import start_scheduler
     from utils.api.crypto import close_http_session
 
-    # Ikkalasini parallel ishga tushirish
+    # Health endpoint (Render keep-alive ping + monitoring uchun).
+    # Polling bot HTTP eshitmasa Render uni "idle" deb uxlatadi.
+    from aiohttp import web
+
+    async def health_handler(request):
+        return web.json_response({"status": "ok"})
+
+    health_runner = web.AppRunner(web.Application())
+    await health_runner.setup()
+    health_site = web.TCPSite(
+        health_runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
+    await health_site.start()
+    logger.info("🏥 Health endpoint started")
+
+    async def run_health():
+        await asyncio.Event().wait()  # cancel bo'lguncha yashaydi
+
+    # Uchalasini parallel ishga tushirish
     async def run_bot():
         logger.info("🤖 Bot started!")
         await dp.start_polling(bot)
@@ -548,14 +566,19 @@ async def main():
     async def run_scheduler():
         await start_scheduler()
 
-    # Ikkalasini bir vaqtda ishga tushirish
+    # Uchalasini bir vaqtda ishga tushirish
     try:
         await asyncio.gather(
             run_bot(),
-            run_scheduler()
+            run_scheduler(),
+            run_health(),
         )
     finally:
         # Toza shutdown: session'lar ochiq qolmaydi
+        try:
+            await health_runner.cleanup()
+        except Exception as e:
+            logger.debug(f"Health cleanup: {e}")
         try:
             await dp.storage.close()
         except Exception as e:
