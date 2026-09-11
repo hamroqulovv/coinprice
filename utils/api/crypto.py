@@ -43,14 +43,28 @@ _rate_cache = {
     "uzs": {"rate": 11800.0, "updated": None, "source": "default"},
     "rub": {"rate": 84.5, "updated": None, "source": "default"},
 }
-_crypto_cache = {}  # coin -> {"price": float, "sources": str, "updated": datetime, "name": str|None}
+# Crypto cache: endi MEDIANA emas, HAR BIR MANBA alohida cache'lanadi.
+# Tez birjalar (Binance/Bybit/Coinbase/DexScreener) real-time (sekundlar) -
+# 5s TTL: qo'lda 10 marta tekshirishda ham jonli narx ko'rinadi.
+# Sekin agregatorlar (CoinGecko/CMC daqiqa-scale yangilanadi) - 60s TTL:
+# ularni tez-tez so'rashning foydasi yo'q, faqat rate-limit yeydi.
+_source_cache = {}  # (source, coin) -> {"res": (raw, name), "updated": datetime}
+_SOURCE_TTLS = {
+    "Binance": timedelta(seconds=5),
+    "Bybit": timedelta(seconds=5),
+    "Coinbase": timedelta(seconds=5),
+    "DexScreener": timedelta(seconds=5),
+    "CoinGecko": timedelta(seconds=60),
+    "CoinMarketCap": timedelta(seconds=60),
+}
+_SOURCE_CACHE_MAX = 2000
+_name_cache = {}  # coin -> display name (restartgacha)
 # Gecko id cache: {"id": str|None, "name": str|None, "updated": datetime, "confirmed": bool}
 # - success (id set): permanent, mapping deyarli o'zgarmaydi
 # - confirmed not-found (200 + zero match): 1 soat (transient xatolar cache'lanmaydi)
 _gecko_search_cache = {}  # SYMBOL -> entry
 
 FIAT_TTL = timedelta(minutes=10)
-CRYPTO_TTL = timedelta(seconds=60)
 GECKO_NEG_TTL = timedelta(hours=1)
 
 # CoinGecko free-tier pacing (strictest API we use: ~5-15 req/min).
@@ -225,13 +239,9 @@ async def get_real_prices(coins):
 async def get_usd_median(coin):
     """Barcha manbalardan narx yig'ib ishonchli medianani qaytaradi.
     Returns (price, sources_str). Trust tiers: aggregated (Gecko/Coinbase/CMC)
-    > single-exchange (Binance/Bybit) > unverified DEX (last resort only)."""
-    # Short crypto cache - same tick consistency + rate-limit protection
-    now = datetime.now()
-    cached = _crypto_cache.get(coin)
-    if cached and cached.get("updated") and (now - cached["updated"]) < CRYPTO_TTL:
-        return cached["price"], cached["sources"]
-
+    > single-exchange (Binance/Bybit) > unverified DEX (last resort only).
+    Har bir manba o'z TTL'ida cache'lanadi: tez birjalar 5s (jonli),
+    sekin agregatorlar 60s (ular baribir daqiqada yangilanadi)."""
     fetchers = (
         (get_from_binance, "Binance"),
         (get_from_bybit, "Bybit"),
@@ -241,9 +251,21 @@ async def get_usd_median(coin):
         (get_from_coinmarketcap, "CoinMarketCap"),
     )
 
-    # Mustaqil manbalar parallel so'raladi
+    async def _cached(fn, name):
+        key = (name, coin)
+        entry = _source_cache.get(key)
+        ttl = _SOURCE_TTLS.get(name, timedelta(seconds=5))
+        if entry and (datetime.now() - entry["updated"]) < ttl:
+            return entry["res"]
+        res = await fn(coin)
+        if len(_source_cache) >= _SOURCE_CACHE_MAX:
+            _source_cache.clear()
+        _source_cache[key] = {"res": res, "updated": datetime.now()}
+        return res
+
+    # Mustaqil manbalar parallel so'raladi (fresh bo'lmaganlari cache'dan)
     results = await asyncio.gather(
-        *(fn(coin) for fn, _ in fetchers), return_exceptions=True
+        *(_cached(fn, name) for fn, name in fetchers), return_exceptions=True
     )
 
     candidates = []  # list of (price, source_name)
@@ -319,14 +341,14 @@ async def get_usd_median(coin):
         final = float(median(filtered))
     sources = "+".join(sorted({s for _, s in pool}))
 
-    _crypto_cache[coin] = {"price": final, "sources": sources, "updated": now, "name": display_name}
+    if display_name:
+        _name_cache[coin] = display_name
     return final, sources
 
 
 def get_coin_display_name(coin):
-    """Oxirgi median yig'ishda topilgan to'liq nom (masalan: Pepe). Bo'lmasa None."""
-    c = _crypto_cache.get(coin.upper().strip().lstrip("$"), {})
-    return c.get("name")
+    """Oxirgi yig'ishda topilgan to'liq nom (masalan: Pepe). Bo'lmasa None."""
+    return _name_cache.get(coin.upper().strip().lstrip("$"))
 
 
 async def get_from_coinbase(coin):

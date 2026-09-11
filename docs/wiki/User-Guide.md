@@ -37,7 +37,7 @@ Main menu buttons:
 
 ## 3. Auto-notifications (🔔)
 
-The **🔔 Avto-xabardorlik** screen shows your alert interval (e.g. `40s`), how many coins you watch, an **❌ per-coin remove** button and **🕒 Intervalni o'zgartirish**.
+The **🔔 Avto-xabardorlik** screen shows your alert interval (e.g. `10s`), how many coins you watch, an **❌ per-coin remove** button and **🕒 Intervalni o'zgartirish**.
 
 How alerts work:
 
@@ -51,6 +51,6 @@ How alerts work:
 Shows name, phone, username, ID, interval and total lookup count. From here you can:
 
 - **📝 Ismni tahrirlash** — change display name (🏠 Asosiy menyu cancels).
-- **🕒 Intervalni tahrirlash** — set a new alert interval in seconds (min 40s).
+- **🕒 Intervalni tahrirlash** — set a new alert interval in seconds (min 10s).
 
 Anything unclear? Check the [FAQ](FAQ.md).

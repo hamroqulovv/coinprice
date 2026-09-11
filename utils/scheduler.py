@@ -43,7 +43,7 @@ async def send_price_updates():
             )
             
             if not users:
-                await asyncio.sleep(20)
+                await asyncio.sleep(10)
                 continue
             
             current_time = datetime.now()
@@ -86,7 +86,7 @@ async def send_price_updates():
 
             # 2-pass: BARCHA due userlardagi DISTINCT coinlarni BITTA call'da olamiz.
             # Har bir coin tashqi API'lardan tick boshiga atigi 1 marta so'raladi
-            # (crypto.py dagi 15s per-coin cache ikkinchi himoya qatlami).
+            # (crypto.py dagi per-source cache ikkinchi himoya qatlami).
             distinct_coins = list(dict.fromkeys(c for _, _, cl in due_users for c in cl))
             try:
                 fetched = await get_real_prices(distinct_coins)
@@ -221,8 +221,8 @@ async def send_price_updates():
         except Exception as e:
             logger.error(f"Scheduler error: {e}")
         
-        # Har 20 soniyada tekshirish
-        await asyncio.sleep(20)
+        # Har 10 soniyada tekshirish (jonli narxlar uchun)
+        await asyncio.sleep(10)
 
 
 async def start_scheduler():

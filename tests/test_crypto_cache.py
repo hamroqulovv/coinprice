@@ -1,11 +1,12 @@
-"""Unit tests for the global crypto price cache (task 3).
+"""Unit tests for the per-source crypto price cache.
 
 External price sources are mocked - no network access. Verifies that a
-second lookup of the same coin within the TTL does NOT hit external APIs
-again (this is what lets one scheduler tick serve all users with one
-fetch per distinct coin).
+second lookup of the same coin within the source TTL does NOT hit external
+APIs again (this is what lets one scheduler tick serve all users with one
+fetch per distinct coin, and keeps manual lookups live).
 """
 import asyncio
+from datetime import timedelta
 from unittest.mock import patch
 
 import utils.api.crypto as crypto
@@ -19,8 +20,20 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _clear():
+    crypto._source_cache.clear()
+    crypto._name_cache.clear()
+
+
+def test_source_ttls_fast_exchanges_live_slow_aggregators_cached():
+    assert crypto._SOURCE_TTLS["Binance"] <= timedelta(seconds=5)
+    assert crypto._SOURCE_TTLS["Bybit"] <= timedelta(seconds=5)
+    assert crypto._SOURCE_TTLS["Coinbase"] <= timedelta(seconds=5)
+    assert crypto._SOURCE_TTLS["CoinGecko"] >= timedelta(seconds=60)
+
+
 def test_usd_median_aggregates_mocked_sources():
-    crypto._crypto_cache.clear()
+    _clear()
     try:
         async def fake_binance(coin):
             return 103.5, "Binance"
@@ -42,12 +55,12 @@ def test_usd_median_aggregates_mocked_sources():
         assert price == 104.0
         assert "Binance" in sources and "Bybit" in sources and "Coinbase" in sources
     finally:
-        crypto._crypto_cache.clear()
+        _clear()
 
 
 def test_single_exchange_outlier_dropped():
     """Binance stale quote far from aggregated venues must not win."""
-    crypto._crypto_cache.clear()
+    _clear()
     try:
         async def stale_binance(coin):
             return 1.60, "Binance"
@@ -65,12 +78,12 @@ def test_single_exchange_outlier_dropped():
         assert price == 1.37575
         assert "Binance" not in sources
     finally:
-        crypto._crypto_cache.clear()
+        _clear()
 
 
 def test_dex_only_last_resort():
     """Unverified DEX price used only when nothing else answers."""
-    crypto._crypto_cache.clear()
+    _clear()
     try:
         async def dex_only(coin):
             return {"usd": 0.59, "name": "X"}, "DexScreener"
@@ -85,11 +98,11 @@ def test_dex_only_last_resort():
         assert price == 0.59
         assert sources == "DexScreener"
     finally:
-        crypto._crypto_cache.clear()
+        _clear()
 
 
 def test_usd_median_cache_avoids_refetch():
-    crypto._crypto_cache.clear()
+    _clear()
     calls = []
     try:
         async def counting_binance(coin):
@@ -110,4 +123,4 @@ def test_usd_median_cache_avoids_refetch():
             assert price2 == 50.0
             assert len(calls) == 1
     finally:
-        crypto._crypto_cache.clear()
+        _clear()

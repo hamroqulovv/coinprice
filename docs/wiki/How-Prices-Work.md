@@ -32,7 +32,7 @@ If nothing anywhere knows the ticker, the user gets a clear "not found" message 
 - **UZS** — USD × official rate from Uzbekistan's Central Bank (CBU), fallback: open.er-api.com.
 - **RUB** — USD × official rate from Russia's Central Bank (CBR), fallback: open.er-api.com.
 
-> Fiat rates change once a day, so they are cached for **10 minutes**. Crypto prices are cached for **15 seconds** so every user in one scheduler tick sees the same number.
+> Fiat rates change once a day, so they are cached for **10 minutes**. Fast exchanges refresh every **5 seconds** (manual lookups are always live); slow aggregators (CoinGecko/CMC) are cached **60 seconds**.
 
 ## Rate limits
 

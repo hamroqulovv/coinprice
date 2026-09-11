@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 from data.config import PRIMARY_ADMIN
-MIN_INTERVAL = 40
+MIN_INTERVAL = 10
 
 # ==================== STATES ====================
 class Register(StatesGroup):

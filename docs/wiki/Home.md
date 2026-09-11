@@ -23,5 +23,5 @@
 1. User sends `/start`, shares their phone number → registered.
 2. User taps **📊 Narxlarni ko'rish**, types `BTC` → gets USD/RUB/UZS prices.
 3. User taps **🔔 Kuzatuvga qo'shish** → coin added to their watchlist.
-4. Every 20 seconds the scheduler re-checks prices and messages the user **only if something moved ≥ 0.01%**.
+4. The scheduler re-checks prices and messages the user **only if something moved ≥ 0.01%**.
 5. Everything is free — unlimited lookups, alerts and intervals for everyone.
