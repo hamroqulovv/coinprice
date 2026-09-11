@@ -592,6 +592,40 @@ async def get_from_coingecko(coin):
     return None, None
 
 
+async def resolve_coingecko_id(symbol):
+    """Ticker symbol (masalan 'MAGMA') ni CoinGecko coin id ga
+    (masalan 'magma-finance') aylantirish - /search endpoint orqali.
+
+    Bir xil ticker bir nechta loyihada bo'lsa, eng kichik (non-null)
+    market_cap_rank tanlanadi; rank bo'lmasa CoinGecko tartibidagi
+    birinchisi olinadi. Topilmasa yoki xatoda None qaytadi (raise yo'q).
+    """
+    try:
+        sym = (symbol or "").upper().strip().lstrip("$")
+        if not sym:
+            return None
+        status, data = await _fetch(
+            "https://api.coingecko.com/api/v3/search",
+            params={"query": sym},
+        )
+        if status != 200 or not data:
+            return None
+        coins = data.get("coins", []) or []
+        exact = [c for c in coins if str(c.get("symbol", "")).upper() == sym]
+        if not exact:
+            return None
+
+        def _rank(c):
+            mr = c.get("market_cap_rank")
+            return mr if isinstance(mr, int) and mr > 0 else 10_000_000
+
+        best = sorted(exact, key=_rank)[0]
+        return best.get("id") or None
+    except Exception as e:
+        logger.debug(f"resolve_coingecko_id error for {symbol}: {e}")
+        return None
+
+
 async def get_from_coingecko_search(coin):
     """
     CoinGecko /search API - HAR QANDAY token uchun universal resolver.
