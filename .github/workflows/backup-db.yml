@@ -1,0 +1,27 @@
+name: backup-db
+
+# Weekly pg_dump of Supabase Postgres (free plan has no auto-backups).
+# Setup: repo Settings -> Secrets -> Actions -> DATABASE_URL
+# (use the DIRECT string, port 5432 - pg_dump hates poolers).
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pg_dump "$DATABASE_URL" -F c -f backup.dump
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg-backup
+          path: backup.dump
+          retention-days: 90

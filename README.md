@@ -106,7 +106,7 @@ docker compose logs -f
 
 `main.db` is persisted through a host volume (see `docker-compose.yml`).
 Running on a plain VM instead? Use the systemd unit in `deploy/crypto-bot.service`.
-Step-by-step guides: [`DEPLOY.md`](DEPLOY.md) · [`DEPLOY_UZ.md`](DEPLOY_UZ.md 🇺🇿)
+Step-by-step guides: [`DEPLOY.md`](DEPLOY.md) · [`DEPLOY_UZ.md`](DEPLOY_UZ.md 🇺🇿) · [`DEPLOY_RENDER_SUPABASE.md`](DEPLOY_RENDER_SUPABASE.md) (free Render + Supabase, $0)
 
 ---
 
