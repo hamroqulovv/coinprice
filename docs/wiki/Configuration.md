@@ -1,6 +1,6 @@
 # Configuration
 
-All settings live in `.env` (copy from `.env.example`). Nothing secret is hardcoded — the payment card number in the premium text is business info, change it in `main.py` if yours differs.
+All settings live in `.env` (copy from `.env.example`). Nothing secret is hardcoded.
 
 ## Required
 

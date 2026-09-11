@@ -10,11 +10,8 @@ SQLite file `main.db` in the project root, created and migrated automatically on
 |---|---|
 | `id` | Telegram user ID (primary key) |
 | `phone`, `username`, `full_name` | Contact details (name is editable) |
-| `is_premium`, `premium_until`, `premium_plan_days`, `premium_given_at` | Subscription state |
 | `interval_min` | Alert interval in **seconds** (default 40) |
 | `view_count` | Lifetime lookups |
-| `daily_views`, `last_view_date` | Free 5/day limit tracking |
-| `last_payment_amount`, `last_payment_rate` | Last receipt data for the admin card |
 
 **`CryptoPreferences`** — watchlist, one row per (user, coin):
 
@@ -27,6 +24,8 @@ SQLite file `main.db` in the project root, created and migrated automatically on
 ## Migrations
 
 All migrations are `IF NOT EXISTS` / `ADD COLUMN`-in-`try/except` style: safe to run on every boot, on fresh and legacy DBs alike. Duplicate watchlist rows from older versions are deduplicated automatically.
+
+> Legacy columns from the removed premium system (`is_premium`, `daily_views`, …) may still exist in old databases — they are simply unused.
 
 ## Reset / inspect
 

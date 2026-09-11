@@ -3,7 +3,7 @@
 ## Project map
 
 ```
-main.py                  # ALL bot handlers, keyboards, premium & admin flows
+main.py                  # ALL bot handlers, keyboards and admin flows
 loader.py                # Bot + Dispatcher + Database singletons
 data/config.py           # .env parsing (BOT_TOKEN, PRIMARY_ADMIN, ADMINS, CHANNELS)
 utils/api/crypto.py      # price engine: median, resolver, fiat rates, caches
@@ -19,8 +19,8 @@ Dockerfile, docker-compose.yml, Procfile, deploy/crypto-bot.service
 - **Fully async I/O.** All HTTP goes through one shared `aiohttp` session (`utils/api/crypto.py`). Never use `requests` here — it blocks the event loop for every user.
 - **Scheduler tick (every 20s):** collect due users → fetch each *distinct* coin **once** → process users concurrently (`Semaphore(5)` + `gather`) → compare against `CryptoPreferences.last_price` → send only on ≥ 0.01% moves.
 - **Bot + scheduler run together** via `asyncio.gather(dp.start_polling(bot), start_scheduler())` in `main.py`.
-- **FSM states** (`aiogram`): `Register.phone`, `EditProfile.name/interval`, `PremiumOrder.waiting_screenshot`, `CoinSearch.waiting_for_symbol`. Memory storage — states reset on restart (by design).
-- **Only `/start` is a command.** Everything else is keyboard text or `callback_data` (`notify_*`, `remove_*`, `plan_*`, `accept_*`, `reject_*`, `user_*`, `admin_users_*`, …).
+- **FSM states** (`aiogram`): `Register.phone`, `EditProfile.name/interval`, `CoinSearch.waiting_for_symbol`. Memory storage — states reset on restart (by design).
+- **Only `/start` is a command.** Everything else is keyboard text or `callback_data` (`notify_*`, `remove_*`, `user_*`, `admin_users_*`, …).
 
 ## Tests & CI
 

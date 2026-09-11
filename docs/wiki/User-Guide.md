@@ -14,7 +14,7 @@ Main menu buttons:
 |---|---|
 | 📊 Narxlarni ko'rish | Price search |
 | 🔔 Avto-xabardorlik | Watchlist & alert interval |
-| 👤 Profile | Profile, settings, premium |
+| 👤 Profile | Profile and settings |
 | 👨‍💼 USERS Admin Panel | Admin only (see [Admin Guide](Admin-Guide.md)) |
 
 ## 2. Checking a price (📊)
@@ -33,7 +33,7 @@ Main menu buttons:
 
 - Tapping **🔔 Kuzatuvga qo'shish** adds the coin to the watchlist (button becomes **✅ Kuzatuvda**).
 - Unknown tickers get a "not found" message plus similar-symbol suggestions.
-- 🆓 Free users: **5 lookups per day**, then the bot offers 💎 Premium.
+- Everything is free — unlimited lookups for everyone.
 
 ## 3. Auto-notifications (🔔)
 
@@ -44,21 +44,13 @@ How alerts work:
 - The bot re-checks your coins on your interval (minimum **40 seconds**).
 - You get a message **only when a price changed ≥ 0.01%** since the last check — no spam when the market is flat.
 - Each alert shows the new price in all three currencies plus the change percent (📈/📉).
-- Changing the interval requires **Premium** (admins are exempt).
+- You can change the interval anytime (minimum **40 seconds**).
 
 ## 4. Profile (👤)
 
-Shows name, phone, username, ID, subscription status, interval and total lookup count. From here you can:
+Shows name, phone, username, ID, interval and total lookup count. From here you can:
 
 - **📝 Ismni tahrirlash** — change display name (🏠 Asosiy menyu cancels).
-- **🕒 Intervalni tahrirlash** — set a new alert interval in seconds (Premium only, min 40s).
-- **💎 Premium** — open the subscription plans.
-
-## 5. Premium (💎)
-
-1. Pick a plan: 1 / 2 / 3 / 6 / 12 months.
-2. Pay to the shown card number and **send a screenshot** of the receipt to the bot.
-3. The screenshot (with your name, plan and timestamp) goes to the admin.
-4. Once approved you get `🎉 Premium faol (N kun)!`; if rejected, the bot tells you and gives the admin's contact.
+- **🕒 Intervalni tahrirlash** — set a new alert interval in seconds (min 40s).
 
 Anything unclear? Check the [FAQ](FAQ.md).

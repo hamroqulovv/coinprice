@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Live crypto prices in USD / RUB / UZS, right inside Telegram.</strong><br>
-  Watchlist alerts · Premium subscriptions · Admin panel
+  Watchlist alerts · 100% free · Admin panel
 </p>
 
 <p align="center">
@@ -39,8 +39,8 @@
 | 💱 **3 currencies** | Every price shown in USD, RUB and UZS |
 | 🔔 **Smart alerts** | Subscribe to coins and get notified only when a price moves ≥ 0.01% |
 | 📝 **Profiles** | Phone-number onboarding, editable name and alert interval |
-| 💎 **Premium** | 5 free lookups/day — unlimited with premium (manual payment + admin approval) |
-| 🛠️ **Admin panel** | Paginated user list, per-user details, give/remove premium |
+| 🆓 **Fully free** | Unlimited lookups and intervals for everyone, no limits |
+| 🛠️ **Admin panel** | Paginated user list and per-user details |
 
 ---
 
@@ -123,7 +123,7 @@ Tests live in `tests/` and run automatically on every push/PR via [`.github/work
 
 SQLite file `main.db`, created automatically on first start:
 
-- **`Users`** — profile, premium status, daily usage counters
+- **`Users`** — profile and usage counters
 - **`CryptoPreferences`** — watchlist with `UNIQUE(user_id, coin_symbol)` and the last notified price (so restarts never re-spam old alerts)
 
 ---

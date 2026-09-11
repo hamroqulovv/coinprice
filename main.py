@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import sqlite3
-from datetime import datetime, timedelta
 from aiogram import types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -31,9 +30,6 @@ class Register(StatesGroup):
 class EditProfile(StatesGroup):
     name = State()
     interval = State()
-
-class PremiumOrder(StatesGroup):
-    waiting_screenshot = State()
 
 class CoinSearch(StatesGroup):
     waiting_for_symbol = State()
@@ -162,23 +158,7 @@ async def search_coin(message: types.Message, state: FSMContext):
 
     if not COIN_RE.match(coin):
         return await message.answer("❌ Noto'g'ri belgi. Masalan: <b>BTC</b>, <b>1INCH</b>, <b>PEPE</b>", parse_mode="HTML")
-    
-    # Daily limit check for free users (5 views/day). Premium and admin exempt.
-    u = db.execute("SELECT is_premium, daily_views, last_view_date FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
-    today = datetime.now().strftime("%Y-%m-%d")
-    if u:
-        is_prem = bool(u[0]) or (message.from_user.id == PRIMARY_ADMIN)
-        daily = u[1] or 0
-        last_date = u[2]
-        if last_date != today:
-            db.execute("UPDATE Users SET daily_views=0, last_view_date=? WHERE id=?", (today, message.from_user.id), commit=True)
-            daily = 0
-        if not is_prem and daily >= 5:
-            kb = InlineKeyboardBuilder()
-            kb.button(text="💎 Premium", callback_data="buy_premium")
-            kb.adjust(1)
-            return await message.answer("⚠️ <b>Bugungi bepul limit tugadi</b> (5 ta).\n\nErtaga qayta urining yoki 💎 Premium oling 👇", parse_mode="HTML", reply_markup=kb.as_markup())
-    
+
     loading = await message.answer("🔍 Qidirilmoqda...")
     
     try:
@@ -215,13 +195,7 @@ async def search_coin(message: types.Message, state: FSMContext):
         src = (d.get('source') or '')
         if src and '+' not in src:
             text += f"\n\n🔎 Manba: {src} (kam likvid - narx taxminiy)"
-        
-        # Increment daily_views for free users
-        u2 = db.execute("SELECT is_premium FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
-        is_prem2 = bool(u2[0]) if u2 else False
-        if not is_prem2 and message.from_user.id != PRIMARY_ADMIN:
-            db.execute("UPDATE Users SET daily_views = daily_views + 1 WHERE id=?", (message.from_user.id,), commit=True)
-        
+
         exists = db.execute("SELECT * FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?", 
                            (message.from_user.id, coin), fetchone=True)
         
@@ -313,21 +287,14 @@ async def remove_coin(callback: types.CallbackQuery):
 # ==================== PROFILE ====================
 @dp.message(F.text == "👤 Profile")
 async def profile(message: types.Message):
-    u = db.execute("SELECT full_name, phone, is_premium, premium_until, interval_min, view_count FROM Users WHERE id=?",
+    u = db.execute("SELECT full_name, phone, interval_min, view_count FROM Users WHERE id=?",
                   (message.from_user.id,), fetchone=True)
-    
+
     if not u:
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
-    
-    if message.from_user.id == PRIMARY_ADMIN:
-        status, expire, is_prem = "⚡ Admin", "Cheksiz", True
-    else:
-        is_prem = bool(u[2])
-        status = "💎 Premium" if is_prem else "🆓 Oddiy"
-        expire = u[3] or "Yo'q"
-    
-    # Unpack the selected columns (order: full_name, phone, is_premium, premium_until, interval_min, view_count)
-    full_name, phone, is_premium_flag, premium_until, interval_min, view_count = u
+
+    # Unpack the selected columns (order: full_name, phone, interval_min, view_count)
+    full_name, phone, interval_min, view_count = u
     username = message.from_user.username or "N/A"
     user_id = message.from_user.id
 
@@ -337,19 +304,15 @@ async def profile(message: types.Message):
         f"📞 Telefon: <code>{phone}</code>\n"
         f"💬 Username: @{username}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
-        f"⭐ Obuna: {status}\n"
-        f"⏳ Muddat: {expire}\n"
         f"🕒 Interval: {interval_min}s\n"
         f"👁 So'rovlar: {view_count}"
     )
-    
+
     kb = InlineKeyboardBuilder()
     kb.button(text="📝 Ismni tahrirlash", callback_data="edit_name")
     kb.button(text="🕒 Intervalni tahrirlash", callback_data="edit_interval")
-    if not is_prem and message.from_user.id != PRIMARY_ADMIN:
-        kb.button(text="💎 Premium", callback_data="buy_premium")
     kb.adjust(1)
-    
+
     await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "edit_name")
@@ -371,13 +334,8 @@ async def update_name(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "edit_interval")
 async def edit_interval(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    u = db.execute("SELECT is_premium FROM Users WHERE id=?", (callback.from_user.id,), fetchone=True)
-    
-    if callback.from_user.id == PRIMARY_ADMIN or (u and u[0]):
-        await callback.message.answer(f"🕒 Yangi intervalni soniyada kiriting (min: {MIN_INTERVAL}s):", reply_markup=back_keyboard())
-        await state.set_state(EditProfile.interval)
-    else:
-        await callback.message.answer("⚠️ Bu funksiya faqat 💎 <b>Premium</b> obunachilar uchun!", parse_mode="HTML")
+    await callback.message.answer(f"🕒 Yangi intervalni soniyada kiriting (min: {MIN_INTERVAL}s):", reply_markup=back_keyboard())
+    await state.set_state(EditProfile.interval)
     await callback.answer()
 
 @dp.message(EditProfile.interval)
@@ -397,128 +355,6 @@ async def update_interval(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Interval yangilandi: <b>{val}s</b>", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
     await state.clear()
 
-# ==================== PREMIUM ====================
-@dp.callback_query(F.data == "buy_premium")
-async def premium_plans(callback: types.CallbackQuery):
-    text = (
-        "💎 <b>Premium obuna</b>\n\n"
-        "<b>Qadamlar:</b>\n"
-        "1️⃣ Pastdagi tugmalardan tarifni tanlang\n"
-        "2️⃣ Karta raqamga to'lov qiling\n"
-        "3️⃣ Chek screenshot'ini shu yerga yuboring\n\n"
-        "💳 Karta raqam: <code>9860350142320406</code>\n"
-        "👤 Ega: <code>Ismoilova.F.</code>\n\n"
-        "❗️ Screenshot'da karta raqam va ism-familiya aniq ko'rinishi shart."
-    )
-    plans = [("⭐ 1 oy - 5 000", "30"), ("🌙 2 oy - 10 000", "60"), ("🎁 3 oy - 15 000", "90"), 
-             ("☀️ 6 oy - 20 000", "180"), ("💎 1 yil - 40 000", "365")]
-    kb = InlineKeyboardBuilder()
-    for name, days in plans:
-        kb.button(text=name, callback_data=f"plan_{days}")
-    kb.adjust(1)
-    await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("plan_"))
-async def select_plan(callback: types.CallbackQuery, state: FSMContext):
-    plan = callback.data.split("_")[1]
-    await state.update_data(plan=plan)
-    await callback.message.answer(f"✅ Tanlandi: <b>{plan} kun</b>\n\n📸 Endi to'lov cheki screenshot'ini yuboring:", parse_mode="HTML")
-    await state.set_state(PremiumOrder.waiting_screenshot)
-    await callback.answer()
-
-@dp.message(PremiumOrder.waiting_screenshot, F.photo)
-async def handle_payment(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    plan = data.get('plan', '30')
-
-    # Try to extract amount and rate from message caption if provided
-    caption_text = (message.caption or "")
-    import re
-
-    def extract_amount(text: str) -> str:
-        # Try labeled amount like 'Summa: 5 000 UZS' or 'Amount:5000'
-        m = re.search(r'(?i)(?:summa|amount|sum|total|сумма)[:\s]*([0-9\s\.,]+)', text)
-        if m:
-            raw = m.group(1)
-            cleaned = re.sub(r"[\s,]+", "", raw)
-            return cleaned
-        # Fallback: find first large number possibly followed by currency
-        m2 = re.search(r'([0-9]+(?:[ \,\.][0-9]{3})*(?:[.,][0-9]+)?)\s*(UZS|UZ|so\'m|so’м|som|сом|₽|rub|USD|usd)?', text, re.IGNORECASE)
-        if m2:
-            num = re.sub(r"[\s,]+", "", m2.group(1))
-            currency = m2.group(2) or ""
-            return f"{num} {currency.strip()}".strip()
-        logger.info(f"Amount not found in caption: {text!r}")
-        return "N/A"
-
-    def extract_rate(text: str) -> str:
-        # Try labeled rate like 'Kurs: 1.23'
-        m = re.search(r'(?i)(?:kurs|kursi|rate)[:\s]*([0-9\s\.,]+)', text)
-        if m:
-            raw = m.group(1)
-            return raw.strip()
-        # Try pattern like '1 USD = 11 000 UZS' and compute implied rate (UZS per USD)
-        m2 = re.search(r'([0-9]+(?:[\.,][0-9]+)?)\s*USD\s*=\s*([0-9]+(?:[ \,\.][0-9]{3})*(?:[\.,][0-9]+)?)\s*UZS', text, re.IGNORECASE)
-        if m2:
-            try:
-                usd = float(m2.group(1).replace(',', '.'))
-                uzs = float(re.sub(r"[\s,]+", "", m2.group(2)).replace(',', '.'))
-                # rate as UZS per USD
-                return f"{uzs / usd:.2f}"
-            except Exception:
-                pass
-        logger.info(f"Rate not found in caption: {text!r}")
-        return "N/A"
-
-    amount = extract_amount(caption_text)
-    rate = extract_rate(caption_text)
-
-    # Get phone from DB if available
-    phone_row = db.execute("SELECT phone FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
-    phone = phone_row[0] if phone_row else "N/A"
-
-    username = message.from_user.username or "N/A"
-    full_name = message.from_user.full_name or username or "N/A"
-    sent_at = message.date.strftime("%Y-%m-%d %H:%M:%S") if message.date else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    deadline = (datetime.now() + timedelta(days=int(plan))).strftime("%Y-%m-%d")
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Tasdiqlash", callback_data=f"accept_{message.from_user.id}_{plan}")
-    kb.button(text="❌ Rad etish", callback_data=f"reject_{message.from_user.id}")
-    kb.adjust(1)
-
-    caption = (
-        "💰 To'lov\n"
-        f"👤 {full_name}\n"
-        f"📞 {phone}\n"
-        f"💬 @{username}\n"
-        f"🆔 {message.from_user.id}\n"
-        f"📦 {plan} kun\n"
-        f"🕒 Yuborilgan: {sent_at}\n"
-        f"⏳ Muddati: {deadline}\n"
-        f"💸 Summa: {amount}\n"
-        f"💱 Kurs: {rate}\n"
-    )
-
-    # Save last payment info to user record so admin can see it in the panel
-    try:
-        db.execute(
-            "UPDATE Users SET last_payment_amount=?, last_payment_rate=? WHERE id=?",
-            (amount, rate, message.from_user.id), commit=True
-        )
-    except Exception as e:
-        logger.error(f"Failed to save last payment info: {e}")
-
-    try:
-        await bot.send_photo(PRIMARY_ADMIN, message.photo[-1].file_id,
-            caption=caption,
-            reply_markup=kb.as_markup())
-        await message.answer("✅ <b>Yuborildi!</b> Admin tasdiqlagach xabar beramiz, kuting. ⏳", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Error sending payment to admin: {e}")
-        await message.answer("❌ Xatolik", reply_markup=main_menu(message.from_user.id))
-    await state.clear()
-
 # ==================== ADMIN ====================
 ADMIN_PAGE_SIZE = 10
 
@@ -528,12 +364,11 @@ def _admin_page_keyboard(page: int):
     pages = max(1, (total + ADMIN_PAGE_SIZE - 1) // ADMIN_PAGE_SIZE)
     page = max(0, min(page, pages - 1))
     users = db.execute(
-        "SELECT id, full_name, is_premium, view_count FROM Users ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT id, full_name, view_count FROM Users ORDER BY id LIMIT ? OFFSET ?",
         (ADMIN_PAGE_SIZE, page * ADMIN_PAGE_SIZE), fetchall=True)
     kb = InlineKeyboardBuilder()
     for u in users:
-        icon = "💎" if u[2] else "👤"
-        kb.button(text=f"{icon} {u[1]} ({u[3]})", callback_data=f"user_{u[0]}")
+        kb.button(text=f"👤 {u[1]} ({u[2]})", callback_data=f"user_{u[0]}")
     kb.adjust(1)
     nav = []
     if page > 0:
@@ -570,7 +405,7 @@ async def manage_user(callback: types.CallbackQuery):
     uid = int(callback.data.split("_")[1])
     # Select explicit columns to avoid confusion if DB schema changes
     u = db.execute(
-        "SELECT id, full_name, phone, username, is_premium, premium_until, premium_plan_days, premium_given_at, last_payment_amount, last_payment_rate, interval_min, view_count FROM Users WHERE id=?",
+        "SELECT id, full_name, phone, username, interval_min, view_count FROM Users WHERE id=?",
         (uid,), fetchone=True
     )
 
@@ -578,85 +413,23 @@ async def manage_user(callback: types.CallbackQuery):
         await callback.answer("User not found", show_alert=True)
         return
 
-    (user_id, full_name, phone, username, is_prem_flag, premium_until, premium_plan_days, premium_given_at, last_payment_amount, last_payment_rate, interval_min, view_count) = u
+    (user_id, full_name, phone, username, interval_min, view_count) = u
     username_display = username or "N/A"
-    status = "💎 Premium" if is_prem_flag else "🆓 Oddiy"
 
     text = (
         f"👤 <b>{full_name}</b>\n\n"
         f"📞 Telefon: <code>{phone}</code>\n"
         f"💬 Username: @{username_display}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
-        f"⭐ Obuna: {status}"
+        f"🕒 Interval: {interval_min}s\n"
+        f"👁 So'rovlar: {view_count}"
     )
 
-    # Show premium metadata if available
-    if is_prem_flag:
-        plan_text = f"{premium_plan_days} kun" if premium_plan_days else "Noma'lum"
-        given_text = premium_given_at or "N/A"
-        until_text = premium_until or "N/A"
-        text += f"\n⏳ Tugaydi: {until_text}\n📦 Tarif: {plan_text}\n🗓 Berilgan: {given_text}"
-
-    # Show last payment details if available
-    if last_payment_amount or last_payment_rate:
-        text += f"\n💸 Summa: {last_payment_amount or 'N/A'}\n💱 Kurs: {last_payment_rate or 'N/A'}"
-
-    text += f"\n🕒 Interval: {interval_min}s\n👁 So'rovlar: {view_count}"
-
     kb = InlineKeyboardBuilder()
-    if not is_prem_flag:
-        kb.button(text="🎁 Give Premium", callback_data=f"give_{uid}")
-    else:
-        kb.button(text="🚫 Remove Premium", callback_data=f"take_{uid}")
     kb.button(text="🔙 Back", callback_data="back_admin")
     kb.adjust(1)
 
     await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-@dp.callback_query(F.data.startswith("give_"))
-async def give_premium_menu(callback: types.CallbackQuery):
-    uid = callback.data.split("_")[1]
-    kb = InlineKeyboardBuilder()
-    plans = [("🌙 1 oy", "30"), ("🌙 2 oy", "60"), ("🌙 3 oy", "90"), ("☀️ 1 yil", "365")]
-    for name, days in plans:
-        kb.button(text=name, callback_data=f"accept_{uid}_{days}")
-    kb.adjust(1)
-    await callback.message.edit_text("🎁 Premium muddatini tanlang:", reply_markup=kb.as_markup())
-
-@dp.callback_query(F.data.startswith("accept_"))
-async def accept_payment(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    # Expect format: accept_<uid>_<days>
-    if len(parts) < 3:
-        await callback.answer("❌ Invalid callback data", show_alert=True)
-        return
-    uid, days = int(parts[1]), int(parts[2])
-    until = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-    given_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    db.execute(
-        "UPDATE Users SET is_premium=1, premium_until=?, premium_plan_days=?, premium_given_at=? WHERE id=?",
-        (until, days, given_at, uid), commit=True
-    )
-    await bot.send_message(uid, f"🎉 Tabriklaymiz! Premium obuna faol ({days} kun).")
-    await callback.answer("✅ Tasdiqlandi")
-    await callback.message.delete()
-
-@dp.callback_query(F.data.startswith("reject_"))
-async def reject_payment(callback: types.CallbackQuery):
-    uid = int(callback.data.split("_")[1])
-    await bot.send_message(uid, "❌ To'lovingiz rad etildi. Iltimos, qayta urinib ko'ring yoki admin bilan bog'laning: @c0mrade_p2p")
-    await callback.message.delete()
-
-@dp.callback_query(F.data.startswith("take_"))
-async def take_premium(callback: types.CallbackQuery):
-    uid = int(callback.data.split("_")[1])
-    # Clear premium flags and metadata
-    db.execute("UPDATE Users SET is_premium=0, premium_until=NULL, premium_plan_days=NULL, premium_given_at=NULL WHERE id=?", (uid,), commit=True)
-    # Notify the user that admin will remove their premium
-    await bot.send_message(uid, "😞 Admin premium obunangizni bekor qildi.")
-    await callback.answer("✅ Olib tashlandi")
-    await callback.message.delete()
 
 @dp.callback_query(F.data == "back_admin")
 async def back_admin(callback: types.CallbackQuery):

@@ -3,8 +3,8 @@
 **The bot says "not found" for my coin.**
 Check the exact ticker spelling (letters + digits, e.g. `1INCH` not `1-INCH`). The bot suggests similar symbols — if yours is genuinely unlisted everywhere supported, it can't be priced. Verify on [coingecko.com](https://www.coingecko.com).
 
-**"Free limit (5) reached" but I barely used it?**
-The counter resets daily. Premium removes it entirely.
+**Is there any usage limit?**
+No — everything is free and unlimited: lookups, alerts and intervals.
 
 **I restarted the bot and everyone got spammed.**
 That was fixed: last notified prices live in the DB (`CryptoPreferences.last_price`), so restarts are silent. If you see it on an old version, update.
@@ -22,9 +22,6 @@ A stale third-party listing once quoted TON ~17% off; the outlier filter now dro
 
 **`int(None)` / crash on startup?**
 `BOT_TOKEN`, `PRIMARY_ADMIN` and `ADMINS` must all be set in `.env` — there are no defaults for those three.
-
-**How do I change the payment card number?**
-It's in `main.py`, function `premium_plans` — update the number and holder name there.
 
 **Where is my data?**
 One file: `main.db` next to `main.py`. Back it up regularly (see [Deployment](Deployment.md)).
