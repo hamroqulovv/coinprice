@@ -18,6 +18,10 @@ user_next_send = {}
 # Bir vaqtda nechta userga xabar yuborish (Telegram rate-limit himoyasi)
 USER_CONCURRENCY = 5
 
+# Interval pastki chegarasi (sekund). main.MIN_INTERVAL bilan sinxron ushlang:
+# DB'dagi NULL/eskiqiymatlar shu yergacha ko'tariladi, spam/hot-loop bo'lmaydi.
+SCHED_MIN_INTERVAL = 10
+
 
 def calculate_price_change(old_price, new_price):
     """
@@ -36,16 +40,40 @@ async def send_price_updates():
     """
     while True:
         try:
-            # Kuzatuvda coin bor foydalanuvchilarni olish
-            users = db.execute(
-                "SELECT id, interval_min FROM Users WHERE id IN (SELECT DISTINCT user_id FROM CryptoPreferences)",
-                fetchall=True
-            )
-            
+            # Kuzatuvlar BITTA query'da olinadi (har user uchun alohida
+            # SELECT o'rniga - N+1 muammosi bo'lmasligi uchun).
+            try:
+                pref_rows = db.execute(
+                    "SELECT user_id, coin_symbol, last_price FROM CryptoPreferences",
+                    fetchall=True,
+                ) or []
+            except Exception as e:
+                logger.error(f"Scheduler watchlist load error: {e}")
+                await asyncio.sleep(10)
+                continue
+            by_user = {}
+            for uid, sym, lp in pref_rows:
+                by_user.setdefault(uid, []).append((sym, lp))
+
+            # GC: kuzatuvi qolmagan userlar memory'dan tozalanadi.
+            for uid in list(user_next_send):
+                if uid not in by_user:
+                    user_next_send.pop(uid, None)
+
+            try:
+                users = db.execute(
+                    "SELECT id, interval_min FROM Users WHERE id IN (SELECT DISTINCT user_id FROM CryptoPreferences)",
+                    fetchall=True,
+                ) or []
+            except Exception as e:
+                logger.error(f"Scheduler users load error: {e}")
+                await asyncio.sleep(10)
+                continue
+
             if not users:
                 await asyncio.sleep(10)
                 continue
-            
+
             current_time = datetime.now()
 
             # 1-pass: intervali kelgan userlar va ularning coinlarini yig'amiz.
@@ -53,7 +81,14 @@ async def send_price_updates():
             due_users = []  # list of (user_id, interval_sec, coin_list, last_map)
             for user in users:
                 user_id = user[0]
-                interval_sec = user[1]
+                try:
+                    interval_sec = int(user[1]) if user[1] is not None else SCHED_MIN_INTERVAL
+                except (TypeError, ValueError):
+                    logger.warning(f"Bad interval_min for user {user_id}: {user[1]!r}, using {SCHED_MIN_INTERVAL}s")
+                    interval_sec = SCHED_MIN_INTERVAL
+                if interval_sec < SCHED_MIN_INTERVAL:
+                    logger.warning(f"Too small interval_min for user {user_id}: {interval_sec}s, floored to {SCHED_MIN_INTERVAL}s")
+                    interval_sec = SCHED_MIN_INTERVAL
 
                 # Keyingi tekshirish vaqtini sozlash
                 if user_id not in user_next_send:
@@ -63,35 +98,28 @@ async def send_price_updates():
                 if current_time < user_next_send[user_id]:
                     continue
 
-                try:
-                    # Coinlar + oxirgi ma'lum narxlarni olish
-                    rows = db.execute(
-                        "SELECT coin_symbol, last_price FROM CryptoPreferences WHERE user_id=?",
-                        (user_id,),
-                        fetchall=True
-                    )
-
-                    if not rows:
-                        continue
-
-                    coin_list = [r[0] for r in rows]
-                    last_map = {r[0]: r[1] for r in rows if r[1]}
-                    due_users.append((user_id, interval_sec, coin_list, last_map))
-                except Exception as e:
-                    logger.error(f"Error loading watchlist for user {user_id}: {e}")
+                watched = by_user.get(user_id)
+                if not watched:
                     user_next_send[user_id] = current_time + timedelta(minutes=5)
+                    continue
+
+                coin_list = [sym for sym, _ in watched]
+                last_map = {sym: lp for sym, lp in watched if lp is not None}
+                due_users.append((user_id, interval_sec, coin_list, last_map))
 
             if not due_users:
+                await asyncio.sleep(10)
                 continue
 
             # 2-pass: BARCHA due userlardagi DISTINCT coinlarni BITTA call'da olamiz.
             # Har bir coin tashqi API'lardan tick boshiga atigi 1 marta so'raladi
             # (crypto.py dagi per-source cache ikkinchi himoya qatlami).
-            distinct_coins = list(dict.fromkeys(c for _, _, cl in due_users for c in cl))
+            distinct_coins = list(dict.fromkeys(c for _, _, cl, _ in due_users for c in cl))
             try:
                 fetched = await get_real_prices(distinct_coins)
             except Exception as e:
                 logger.error(f"Scheduler batch price fetch error: {e}")
+                await asyncio.sleep(10)
                 continue
             price_by_coin = dict(zip(distinct_coins, fetched))
 
