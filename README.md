@@ -90,6 +90,7 @@ All settings live in `.env`:
 | `UZS_RATE_URL` | ⬜ | Override, default CBU JSON endpoint |
 | `RUB_RATE_URL` | ⬜ | Override, default CBR JSON endpoint |
 | `COINMARKETCAP_API_KEY` / `COINMARKETCAP_URL` | ⬜ | Adds CoinMarketCap as an extra price source |
+| `COINGECKO_API_KEY` | ⬜ | Free demo key from coingecko.com — raises rate limits so low-cap lookups throttle less |
 
 ⬜ = optional, has a working built-in default.
 

@@ -35,8 +35,10 @@ HEADERS = {"User-Agent": "coin-price-bot/1.1"}
 
 # Fiat cache: CBU/CBR update DAILY, so 10 min TTL is plenty and reduces
 # failure surface. Stale value is returned on fetch error.
-# Crypto cache: 15s TTL so all users in one scheduler tick see same price
+# Crypto cache: 60s TTL so all users in one scheduler tick see same price
 # and we don't hammer APIs (rate-limit protection = fewer outliers).
+# CoinGecko free tier allows ~5-15 req/min - without this cache + throttle
+# below, parallel batches get HTTP 429 and Gecko silently drops out.
 _rate_cache = {
     "uzs": {"rate": 11800.0, "updated": None, "source": "default"},
     "rub": {"rate": 84.5, "updated": None, "source": "default"},
@@ -48,8 +50,14 @@ _crypto_cache = {}  # coin -> {"price": float, "sources": str, "updated": dateti
 _gecko_search_cache = {}  # SYMBOL -> entry
 
 FIAT_TTL = timedelta(minutes=10)
-CRYPTO_TTL = timedelta(seconds=15)
+CRYPTO_TTL = timedelta(seconds=60)
 GECKO_NEG_TTL = timedelta(hours=1)
+
+# CoinGecko free-tier pacing (strictest API we use: ~5-15 req/min).
+# Serialized calls with a minimum gap keep us under the limit.
+_GECKO_HOST = "api.coingecko.com"
+_gecko_lock = asyncio.Semaphore(1)
+_gecko_last_call = 0.0
 
 # Coin-level concurrency cap (respects free-tier rate limits)
 _COIN_SEMAPHORE = asyncio.Semaphore(5)
@@ -97,39 +105,68 @@ async def close_http_session():
 async def _fetch(url, params=None, extra_headers=None):
     """GET JSON via shared session. Returns (status, json_or_None).
 
-    Non-200 responses return (status, None). 429 is retried once after 2s.
+    Non-200 responses return (status, None). 429 honors Retry-After
+    (capped) with up to 2 retries. CoinGecko calls are throttled.
     """
+    if _GECKO_HOST in url:
+        await _throttle_gecko()
+        extra_headers = {**_gecko_demo_headers(), **(extra_headers or {})}
+
     session = await _session()
-    try:
-        async with session.get(url, params=params, headers=extra_headers) as r:
-            status = r.status
-            if status == 429:
-                await asyncio.sleep(2)
-                async with session.get(url, params=params, headers=extra_headers) as r2:
-                    status = r2.status
-                    if status != 200:
-                        return status, None
+    backoff = (5.0, 15.0)
+    for attempt in range(3):
+        try:
+            async with session.get(url, params=params, headers=extra_headers) as r:
+                status = r.status
+                if status == 429 and attempt < 2:
+                    delay = backoff[attempt]
                     try:
-                        return status, await r2.json()
-                    except Exception:
-                        return status, None
-            if status != 200:
-                return status, None
-            try:
-                return status, await r.json()
-            except Exception:
-                return status, None
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logger.debug(f"HTTP error {url}: {e}")
-        return None, None
+                        retry_after = float(r.headers.get("Retry-After", ""))
+                        delay = min(max(retry_after, 1.0), 30.0)
+                    except (TypeError, ValueError):
+                        pass
+                    logger.debug(f"HTTP 429 {url}, retry in {delay}s")
+                    await asyncio.sleep(delay)
+                    continue
+                if status != 200:
+                    return status, None
+                try:
+                    return status, await r.json()
+                except Exception:
+                    return status, None
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logger.debug(f"HTTP error {url}: {e}")
+            return None, None
+    return 429, None
+
+
+def _gecko_demo_headers():
+    """Optional free CoinGecko demo key -> higher rate limits. Empty if unset."""
+    key = _get_env("COINGECKO_API_KEY")
+    if key and len(key) >= 20:
+        return {"x-cg-demo-api-key": key}
+    return {}
+
+
+async def _throttle_gecko():
+    """Serialize CoinGecko calls with a minimum gap (free-tier pacing)."""
+    global _gecko_last_call
+    interval = 2.0 if _gecko_demo_headers() else 5.0
+    async with _gecko_lock:
+        now = asyncio.get_running_loop().time()
+        wait = interval - (now - _gecko_last_call)
+        if wait > 0:
+            await asyncio.sleep(wait)
+            now = asyncio.get_running_loop().time()
+        _gecko_last_call = now
 
 
 def _get_env(name):
     val = os.getenv(name, "").strip().strip("'\"")
     if not val or val.lower() in PLACEHOLDERS:
         return DEFAULTS.get(name)
-    # bare "coinmarketcap API" style placeholder for the key
-    if name == "COINMARKETCAP_API_KEY" and len(val) < 20:
+    # bare "xxx API" style placeholders for keys (too short to be real)
+    if name.endswith("_API_KEY") and len(val) < 20:
         return None
     return val
 

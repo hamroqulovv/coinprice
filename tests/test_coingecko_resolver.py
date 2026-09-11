@@ -3,6 +3,7 @@
 HTTP is fully mocked (crypto._fetch) - no real network access.
 """
 import asyncio
+import os
 from unittest.mock import patch
 
 import utils.api.crypto as crypto
@@ -133,3 +134,25 @@ def test_resolver_used_for_unknown_symbol_price():
         res, source = _run(crypto.get_from_coingecko("MAGMA"))
     assert source == "CoinGecko"
     assert res == {"usd": 0.42, "name": "Magma Finance"}
+
+
+def test_demo_headers_empty_without_key():
+    old = os.environ.get("COINGECKO_API_KEY")
+    os.environ.pop("COINGECKO_API_KEY", None)
+    try:
+        assert crypto._gecko_demo_headers() == {}
+    finally:
+        if old is not None:
+            os.environ["COINGECKO_API_KEY"] = old
+
+
+def test_demo_headers_set_with_key():
+    old = os.environ.get("COINGECKO_API_KEY")
+    os.environ["COINGECKO_API_KEY"] = "CG-" + "x" * 30
+    try:
+        assert crypto._gecko_demo_headers() == {"x-cg-demo-api-key": "CG-" + "x" * 30}
+    finally:
+        if old is not None:
+            os.environ["COINGECKO_API_KEY"] = old
+        else:
+            os.environ.pop("COINGECKO_API_KEY", None)

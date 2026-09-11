@@ -21,6 +21,7 @@ All settings live in `.env` (copy from `.env.example`). Nothing secret is hardco
 | `UZS_RATE_URL` | CBU JSON endpoint | USD→UZS official rate |
 | `RUB_RATE_URL` | CBR JSON endpoint | USD→RUB official rate |
 | `COINMARKETCAP_API_KEY` | — | Enables CoinMarketCap as an extra source |
+| `COINGECKO_API_KEY` | — | Free demo key (coingecko.com): higher rate limits, fewer throttled low-cap lookups |
 | `COINMARKETCAP_URL` | `…/v1/cryptocurrency/quotes/latest` | CMC endpoint (needs the key) |
 
 Override a default only if you mirror the API or the official URL changes.
