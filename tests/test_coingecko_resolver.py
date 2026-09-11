@@ -100,24 +100,85 @@ def test_cache_avoids_second_http_call():
     assert len(calls) == 1
 
 
-def test_network_error_returns_none_without_poisoning_cache():
+def test_empty_and_dollar_only_never_hit_network():
     calls = []
 
-    async def flaky_fetch(url, params=None, extra_headers=None):
+    async def fake_fetch(url, params=None, extra_headers=None):
         calls.append(url)
-        if len(calls) == 1:
-            raise TimeoutError("boom")
-        return _search_response([
-            {"id": "magma-finance", "symbol": "magma", "name": "Magma Finance",
-             "market_cap_rank": 500},
-        ])
+        return 200, {"coins": []}
 
-    with patch.object(crypto, "_fetch", side_effect=flaky_fetch):
-        # error -> None, and must NOT be cached ...
+    with patch.object(crypto, "_fetch", side_effect=fake_fetch):
+        assert _run(crypto.resolve_coingecko_id("")) is None
+        assert _run(crypto.resolve_coingecko_id(None)) is None
+        assert _run(crypto.resolve_coingecko_id("$")) is None
+    assert calls == []
+
+
+def test_case_insensitive_and_dollar_stripped():
+    async def fake_fetch(url, params=None, extra_headers=None):
+        assert params["query"] == "MAGMA"  # normalized before HTTP
+        return 200, {"coins": [
+            {"id": "magma-finance", "symbol": "MAGMA", "name": "Magma Finance",
+             "market_cap_rank": 500},
+        ]}
+
+    with patch.object(crypto, "_fetch", side_effect=fake_fetch):
+        assert _run(crypto.resolve_coingecko_id("  $magma ")) == "magma-finance"
+
+
+def test_malformed_id_not_cached():
+    calls = []
+
+    async def fake_fetch(url, params=None, extra_headers=None):
+        calls.append(url)
+        return 200, {"coins": [
+            {"symbol": "MAGMA", "name": "No Id", "market_cap_rank": 1},
+        ]}
+
+    with patch.object(crypto, "_fetch", side_effect=fake_fetch):
         assert _run(crypto.resolve_coingecko_id("MAGMA")) is None
-        # ... so the retry really hits HTTP again and succeeds
-        assert _run(crypto.resolve_coingecko_id("MAGMA")) == "magma-finance"
+        assert _run(crypto.resolve_coingecko_id("MAGMA")) is None
+    assert len(calls) == 2  # malformed -> retried, never cached
+
+
+def test_http_error_not_cached():
+    calls = []
+
+    async def fake_fetch(url, params=None, extra_headers=None):
+        calls.append(url)
+        return 429, None  # prod _fetch shape on throttle (never raises)
+
+    with patch.object(crypto, "_fetch", side_effect=fake_fetch):
+        assert _run(crypto.resolve_coingecko_id("MAGMA")) is None
+        assert _run(crypto.resolve_coingecko_id("MAGMA")) is None
     assert len(calls) == 2
+
+
+class _FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def monotonic(self):
+        return self.t
+
+
+def test_negative_cache_expires(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr("utils.api.crypto.time", clock)
+    calls = []
+
+    async def fake_fetch(url, params=None, extra_headers=None):
+        calls.append(url)
+        return 200, {"coins": []}  # confirmed not-found
+
+    with patch.object(crypto, "_fetch", side_effect=fake_fetch):
+        assert _run(crypto.resolve_coingecko_id("NOPE")) is None
+        clock.t += 3599
+        assert _run(crypto.resolve_coingecko_id("NOPE")) is None
+        assert len(calls) == 1  # still within 1h negative TTL
+        clock.t += 2  # 3601s total -> expired
+        assert _run(crypto.resolve_coingecko_id("NOPE")) is None
+        assert len(calls) == 2
 
 
 def test_resolver_used_for_unknown_symbol_price():

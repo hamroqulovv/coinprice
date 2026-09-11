@@ -123,3 +123,28 @@ def test_usd_median_cache_avoids_refetch():
             assert len(calls) == 1
     finally:
         _clear()
+
+
+def test_misses_are_not_cached():
+    """Transient (None,None) must NOT be cached - next tick retries."""
+    _clear()
+    calls = []
+    try:
+        async def flaky(coin):
+            calls.append(coin)
+            if len(calls) == 1:
+                return None, None
+            return 77.0, "Binance"
+
+        with patch.object(crypto, "get_from_binance", side_effect=flaky), \
+             patch.object(crypto, "get_from_bybit", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coinbase", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coingecko", side_effect=_null_source), \
+             patch.object(crypto, "get_from_dexscreener", side_effect=_null_source), \
+             patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
+            assert _run(crypto.get_usd_median("FLU")) == (None, None)
+            price, _ = _run(crypto.get_usd_median("FLU"))
+            assert price == 77.0
+            assert len(calls) == 2
+    finally:
+        _clear()
