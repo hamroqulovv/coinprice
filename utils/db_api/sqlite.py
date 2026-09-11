@@ -130,7 +130,3 @@ class Database:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_prefs_user_coin "
             "ON CryptoPreferences(user_id, coin_symbol)"
         )
-
-    def clear_user_preferences(self, user_id):
-        sql = "DELETE FROM CryptoPreferences WHERE user_id=?"
-        self.execute(sql, (user_id,), commit=True)

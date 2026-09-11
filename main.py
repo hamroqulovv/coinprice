@@ -7,7 +7,6 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -36,7 +35,6 @@ MIN_INTERVAL = 10
 # ==================== STATES ====================
 class Register(StatesGroup):
     phone = State()
-    name = State()
 
 class EditProfile(StatesGroup):
     name = State()
@@ -136,8 +134,10 @@ async def get_phone(message: types.Message, state: FSMContext):
     username = message.from_user.username or "N/A"
 
     try:
+        # INSERT OR IGNORE: kontaktni ikki marta bosish race'ida
+        # ikkinchi urinish ham muvaffaqiyat hisoblanadi.
         db.execute(
-            "INSERT INTO Users (id, phone, username, full_name, interval_min, is_premium, view_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO Users (id, phone, username, full_name, interval_min, is_premium, view_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (message.from_user.id, phone, username, full_name, MIN_INTERVAL, 0, 0),
             commit=True
         )
@@ -272,15 +272,17 @@ async def add_watchlist(callback: types.CallbackQuery):
         except TelegramBadRequest as e:
             if "message is not modified" not in str(e).lower():
                 raise
-    except sqlite3.IntegrityError:
-        logger.info(f"Watchlist duplicate: user {callback.from_user.id} already watches {coin}")
-        await callback.answer(f"✅ {coin} allaqachon kuzatuvda!", show_alert=True)
     except sqlite3.Error as e:
         logger.error(f"Watchlist DB error for user {callback.from_user.id}, coin {coin}: {e}")
         await callback.answer("❌ Xatolik", show_alert=True)
     except Exception as e:
         logger.error(f"Watchlist unexpected error for user {callback.from_user.id}, coin {coin}: {e}")
         await callback.answer("❌ Xatolik", show_alert=True)
+
+@dp.callback_query(F.data.startswith("watching_"))
+async def already_watching(callback: types.CallbackQuery):
+    coin = callback.data.split("_", 1)[1]
+    await callback.answer(f"✅ {coin} allaqachon kuzatuvda!", show_alert=True)
 
 # ==================== AUTO-NOTIFY ====================
 @dp.message(F.text == "🔔 Avto-xabardorlik")
@@ -306,8 +308,8 @@ async def auto_notify(message: types.Message):
             kb.button(text=f"❌ {c[0]}", callback_data=f"remove_{c[0]}")
         kb.button(text="🕒 Intervalni o'zgartirish", callback_data="edit_interval")
         kb.adjust(1)
-    
-    await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
+
+    await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup() if coins else None)
 
 @dp.callback_query(F.data.startswith("remove_"))
 async def remove_coin(callback: types.CallbackQuery):
@@ -441,7 +443,8 @@ def _admin_page_keyboard(page: int):
         nav.append(types.InlineKeyboardButton(text="Next ▶️", callback_data=f"admin_users_{page + 1}"))
     if nav:
         kb.row(*nav)
-    return kb.as_markup(), total, page, pages
+    markup = kb.as_markup() if (users or nav) else None
+    return markup, total, page, pages
 
 @dp.message(F.text == "👨‍💼 USERS Admin Panel")
 async def admin_panel(message: types.Message):
