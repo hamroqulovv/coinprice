@@ -206,6 +206,7 @@ async def send_price_updates():
                         # bitta yaroqsiz coin butun user'ni to'xtatmaydi)
                         changes_detected = []
                         message_lines = []
+                        pending_saves = []
 
                         for coin in coin_list:
                             try:
@@ -252,15 +253,19 @@ async def send_price_updates():
                                 logger.error(f"Skipping coin {coin} for user {user_id}: {e}")
                                 continue
 
-                            # Oxirgi narxni DB'ga saqlash (restart'dan omon qoladi)
+                            pending_saves.append((new_price, checked_at, user_id, coin))
+
+                        # Oxirgi narxlar BITTA transaction'da saqlanadi
+                        # (restart'dan omon qoladi, lock contention kamayadi)
+                        if pending_saves:
                             try:
-                                db.execute(
+                                db.execute_many(
                                     "UPDATE CryptoPreferences SET last_price=?, last_checked_at=? WHERE user_id=? AND coin_symbol=?",
-                                    (new_price, checked_at, user_id, coin),
+                                    pending_saves,
                                     commit=True,
                                 )
                             except Exception as e:
-                                logger.error(f"Error saving last_price for user {user_id}, coin {coin}: {e}")
+                                logger.error(f"Error saving last_prices for user {user_id}: {e}")
 
                         # Agar o'zgarish bo'lsa - xabar yuborish (chunk'larda)
                         if changes_detected:
