@@ -10,7 +10,10 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from loader import bot, dp, db
-from utils.api.crypto import get_real_prices
+from utils.api.crypto import get_real_prices, suggest_coins
+import re
+
+COIN_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-_$]{0,14}$")
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,9 +82,11 @@ def format_price(value, currency='USD'):
 
     # UZS formatting (show integer part if large)
     if currency == 'UZS':
+        if v >= 1000:
+            return f"{int(round(v)):,} so'm"
         if v >= 1:
-            return f"{int(round(v)): ,d} so'm".replace(' ,', ',')
-        return f"{v:.2f} so'm"
+            return f"{v:,.2f} so'm"
+        return f"{v:.4f} so'm"
 
     return str(value)
 
@@ -133,7 +138,9 @@ async def show_coins_search(message: types.Message, state: FSMContext):
     db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
     await state.set_state(CoinSearch.waiting_for_symbol)
     await message.answer(
-        "💰 <b>Coin qidiruv</b>\n\nCoin belgisini kiriting👇",
+        "💰 <b>Coin qidiruv</b>\n\nIstalgan coin/token belgisini kiriting👇\n"
+        "<i>Masalan: BTC, ETH, SOL, PEPE, WIF, 1INCH, POPCAT...</i>\n"
+        "Barcha kripto va tokenlar qo'llab-quvvatlanadi.",
         parse_mode="HTML",
         reply_markup=back_keyboard()
     )
@@ -149,10 +156,10 @@ async def search_coin(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
 
-    coin = message.text.upper().strip()
-    
-    if not coin.isalpha() or len(coin) < 2:
-        return await message.answer("❌ To'g'ri coin belgisini kiriting (masalan: BTC)")
+    coin = message.text.upper().strip().lstrip("$")
+
+    if not COIN_RE.match(coin):
+        return await message.answer("❌ To'g'ri coin belgisini kiriting (masalan: BTC, 1INCH, PEPE)")
     
     # Daily limit check for free users (5 views/day). Premium and admin exempt.
     u = db.execute("SELECT is_premium, daily_views, last_view_date FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
@@ -176,14 +183,36 @@ async def search_coin(message: types.Message, state: FSMContext):
         data = get_real_prices([coin])
         if not data or data[0] is None:
             await loading.delete()
+            # O'xshash coinlarni taklif qilish
+            try:
+                suggs = suggest_coins(coin, limit=5)
+            except Exception:
+                suggs = []
+            if suggs:
+                kb = InlineKeyboardBuilder()
+                lines = []
+                for s in suggs:
+                    lines.append(f"• <b>{s['symbol']}</b> - {s['name']}")
+                return await message.answer(
+                    f"❌ <b>{coin}</b> topilmadi.\n\nBalki shulardan biri:\n"
+                    + "\n".join(lines)
+                    + "\n\nBelgisini aniq yozib qayta urining.",
+                    parse_mode="HTML",
+                )
             return await message.answer(f"❌  Bu turdagi coin mavjud emas. Iltimos to'g'ri kiriting.", parse_mode="HTML")
-        
+
         d = data[0]
         usd_str = format_price(d.get('usd', 0), 'USD')
         rub_str = format_price(d.get('rub', 0), 'RUB')
         uzs_str = format_price(d.get('uzs', 0), 'UZS')
+        coin_name = d.get('name')
+        title = f"💰 <b>{coin}</b>" + (f" ({coin_name})" if coin_name and coin_name.upper() != coin else "")
 
-        text = f"💰 <b>{coin}</b>\n\n💵 USD: <code>{usd_str}</code>\n🇷🇺 RUB: <code>{rub_str}</code>\n🇺🇿 UZS: <code>{uzs_str}</code>"
+        text = f"{title}\n\n💵 USD: <code>{usd_str}</code>\n🇷🇺 RUB: <code>{rub_str}</code>\n🇺🇿 UZS: <code>{uzs_str}</code>"
+        # Yagona manbali (ekzotik) coinlar uchun ogohlantirish
+        src = (d.get('source') or '')
+        if src and '+' not in src:
+            text += f"\n\n🔎 Manba: {src} (kam likvid - narx taxminiy)"
         
         # Increment daily_views for free users
         u2 = db.execute("SELECT is_premium FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
