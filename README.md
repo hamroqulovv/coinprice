@@ -11,6 +11,12 @@ Telegram bot that shows crypto prices in **USD / RUB / UZS** and sends automatic
 - **Premium** — manual card payment, screenshot sent to admin for approval.
 - **Admin panel** — paginated user list, per-user details, give/remove premium.
 
+## Price sources
+- Lookup order per coin: **Binance → Bybit → Coinbase → CoinGecko → DexScreener** (+ CoinMarketCap if key set); the median of all successful sources wins, outliers are dropped.
+- Well-known tickers use a hardcoded CoinGecko-id fast path (no extra call). Unknown tickers are resolved dynamically via CoinGecko `/search` (exact symbol match, lowest `market_cap_rank` wins; result cached permanently, confirmed misses cached 1 hour).
+- A coin can still be "not found" if it is listed nowhere supported or its ticker is ambiguous/misspelled — the bot suggests similar symbols in that case.
+- CoinGecko's free `/search` is rate-limited; the cache absorbs repeats, but a burst of many *distinct* new coins in a row can be throttled (the bot retries once, then skips that source for the tick).
+
 ## Tech
 - Python 3.11+, aiogram 3.4.1, aiohttp (async HTTP), SQLite (`main.db`)
 - Tests: pytest (`tests/`), CI on push/PR (`.github/workflows/tests.yml`)
