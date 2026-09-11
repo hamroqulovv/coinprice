@@ -2,7 +2,7 @@
 aiogram==3.29.0
 
 # Environment variables
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 
 # HTTP client (async - crypto.py uses shared aiohttp session)
 # (requests removed: sync calls blocked the event loop)
