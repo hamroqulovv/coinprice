@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sqlite3
 from datetime import datetime, timedelta
 from aiogram import types, F
 from aiogram.filters import Command
@@ -251,7 +252,14 @@ async def add_watchlist(callback: types.CallbackQuery):
         kb = InlineKeyboardBuilder()
         kb.button(text="✅ Kuzatuvda", callback_data=f"watching_{coin}")
         await callback.message.edit_reply_markup(reply_markup=kb.as_markup())
-    except:
+    except sqlite3.IntegrityError:
+        logger.info(f"Watchlist duplicate: user {callback.from_user.id} already watches {coin}")
+        await callback.answer(f"✅ {coin} allaqachon kuzatuvda!", show_alert=True)
+    except sqlite3.Error as e:
+        logger.error(f"Watchlist DB error for user {callback.from_user.id}, coin {coin}: {e}")
+        await callback.answer("❌ Xatolik", show_alert=True)
+    except Exception as e:
+        logger.error(f"Watchlist unexpected error for user {callback.from_user.id}, coin {coin}: {e}")
         await callback.answer("❌ Xatolik", show_alert=True)
 
 # ==================== AUTO-NOTIFY ====================
