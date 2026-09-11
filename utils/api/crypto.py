@@ -49,7 +49,6 @@ _gecko_search_cache = {}  # SYMBOL -> entry
 
 FIAT_TTL = timedelta(minutes=10)
 CRYPTO_TTL = timedelta(seconds=15)
-GECKO_SEARCH_TTL = timedelta(hours=24)
 GECKO_NEG_TTL = timedelta(hours=1)
 
 # Coin-level concurrency cap (respects free-tier rate limits)
@@ -199,7 +198,6 @@ async def get_usd_median(coin):
         (get_from_bybit, "Bybit"),
         (get_from_coinbase, "Coinbase"),
         (get_from_coingecko, "CoinGecko"),
-        (get_from_coingecko_search, "GeckoSearch"),
         (get_from_dexscreener, "DexScreener"),
         (get_from_coinmarketcap, "CoinMarketCap"),
     )
@@ -571,7 +569,15 @@ async def get_from_coingecko(coin):
         "FLOKI": "floki",
     }
 
-    coin_id = COIN_IDS.get(coin, coin.lower())
+    # Fast path: mashhur coinlar network'siz topiladi
+    coin_id = COIN_IDS.get(coin)
+    coin_name = None
+    if coin_id is None:
+        # Noma'lum ticker -> dinamik resolver (/search + cache)
+        coin_id = await resolve_coingecko_id(coin)
+        if coin_id is None:
+            return None, None
+        coin_name = _gecko_search_cache.get(coin.upper().strip().lstrip("$"), {}).get("name")
 
     try:
         url = _get_env("COINGECKO_URL")
@@ -588,6 +594,8 @@ async def get_from_coingecko(coin):
             if coin_id in data and "usd" in data[coin_id]:
                 price = float(data[coin_id]["usd"])
                 if _is_sane_usd(price):
+                    if coin_name:
+                        return {"usd": price, "name": coin_name}, "CoinGecko"
                     return price, "CoinGecko"
 
     except Exception as e:
@@ -648,76 +656,6 @@ async def resolve_coingecko_id(symbol):
     except Exception as e:
         logger.debug(f"resolve_coingecko_id error for {symbol}: {e}")
         return None
-
-
-async def get_from_coingecko_search(coin):
-    """
-    CoinGecko /search API - HAR QANDAY token uchun universal resolver.
-    Hardcoded COIN_IDS da bo'lmagan yangi/mem coinlar shu orqali topiladi.
-    Natija 24 soat cache'lanadi (search rate-limit juda qattiq).
-    Returns ({"usd":.., "name":..}, "CoinGecko") yoki (None, None).
-    """
-    symbol = coin.upper().strip().lstrip("$")
-    if not symbol:
-        return None, None
-
-    now = datetime.now()
-    cached = _gecko_search_cache.get(symbol)
-    coin_id = None
-    coin_name = None
-
-    if cached and cached.get("updated"):
-        if cached.get("id") and (now - cached["updated"]) < GECKO_SEARCH_TTL:
-            coin_id = cached["id"]
-            coin_name = cached.get("name")
-        elif not cached.get("id") and cached.get("confirmed") and (now - cached["updated"]) < GECKO_NEG_TTL:
-            return None, None  # confirmed not-found, hali fresh
-    if coin_id is None:
-        try:
-            status, data = await _fetch(
-                "https://api.coingecko.com/api/v3/search",
-                params={"query": symbol},
-            )
-            if status != 200 or not data:
-                return None, None
-            coins = data.get("coins", []) or []
-
-            # 1. Aniq symbol match (case-insensitive), eng yuqori market_cap_rank
-            exact = [c for c in coins if str(c.get("symbol", "")).upper() == symbol]
-            pool = exact or coins
-            if not pool:
-                return None, None
-
-            def _rank(c):
-                mr = c.get("market_cap_rank")
-                return mr if isinstance(mr, int) and mr > 0 else 10_000_000
-
-            best = sorted(pool, key=_rank)[0]
-            coin_id = best.get("id")
-            coin_name = best.get("name") or best.get("symbol")
-            if not coin_id:
-                return None, None
-            _gecko_search_cache[symbol] = {"id": coin_id, "name": coin_name, "updated": now, "confirmed": True}
-        except Exception as e:
-            logger.debug(f"GeckoSearch error for {coin}: {e}")
-            return None, None
-
-    # 2. Topilgan id bo'yicha narx
-    try:
-        url = _get_env("COINGECKO_URL")
-        status, data = await _fetch(
-            url,
-            params={"ids": coin_id, "vs_currencies": "usd"},
-        )
-        if status == 200 and data:
-            if coin_id in data and "usd" in data[coin_id]:
-                price = float(data[coin_id]["usd"])
-                if _is_sane_usd(price):
-                    return {"usd": price, "name": coin_name}, "CoinGecko"
-    except Exception as e:
-        logger.debug(f"GeckoSearch price error for {coin} ({coin_id}): {e}")
-
-    return None, None
 
 
 async def suggest_coins(query, limit=5):

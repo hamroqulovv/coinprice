@@ -35,7 +35,6 @@ def test_usd_median_aggregates_mocked_sources():
              patch.object(crypto, "get_from_bybit", side_effect=fake_bybit), \
              patch.object(crypto, "get_from_coinbase", side_effect=fake_coinbase), \
              patch.object(crypto, "get_from_coingecko", side_effect=_null_source), \
-             patch.object(crypto, "get_from_coingecko_search", side_effect=_null_source), \
              patch.object(crypto, "get_from_dexscreener", side_effect=_null_source), \
              patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
             price, sources = _run(crypto.get_usd_median("TST"))
@@ -58,7 +57,6 @@ def test_usd_median_cache_avoids_refetch():
              patch.object(crypto, "get_from_bybit", side_effect=_null_source), \
              patch.object(crypto, "get_from_coinbase", side_effect=_null_source), \
              patch.object(crypto, "get_from_coingecko", side_effect=_null_source), \
-             patch.object(crypto, "get_from_coingecko_search", side_effect=_null_source), \
              patch.object(crypto, "get_from_dexscreener", side_effect=_null_source), \
              patch.object(crypto, "get_from_coinmarketcap", side_effect=_null_source):
             price1, _ = _run(crypto.get_usd_median("CCH"))
