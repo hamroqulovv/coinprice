@@ -100,13 +100,15 @@ async def start_bot(message: types.Message, state: FSMContext):
     if not user:
         kb = [[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]]
         await message.answer(
-            "🤖 <b>Assalomu alaykum!</b>\n\nTelefon raqamingizni yuboring:",
+            "🤖 <b>Assalomu alaykum!</b>\n\n"
+            "Bu <b>Crypto Narx</b> boti — jonli kripto narxlar va avto-xabardorliklar.\n"
+            "Boshlash uchun telefon raqamingizni yuboring 👇",
             reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
             parse_mode="HTML"
         )
         await state.set_state(Register.phone)
     else:
-        await message.answer(f"Xush kelibsiz! {user[3]} 👋", reply_markup=main_menu(message.from_user.id))
+        await message.answer(f"👋 Xush kelibsiz, <b>{user[3]}</b>!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
 
 @dp.message(Register.phone, F.contact)
 async def get_phone(message: types.Message, state: FSMContext):
@@ -121,7 +123,7 @@ async def get_phone(message: types.Message, state: FSMContext):
             (message.from_user.id, phone, username, full_name, MIN_INTERVAL, 0, 0),
             commit=True
         )
-        await message.answer("✅ Ro'yxatdan o'tdingiz!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+        await message.answer("✅ <b>Ro'yxatdan o'tdingiz!</b>\n\n📊 Narxlarni ko'rish uchun menyudan foydalaning.", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
         logger.info(f"New user: {message.from_user.id}")
     except Exception as e:
         logger.error(f"Registration error: {e}")
@@ -139,9 +141,8 @@ async def show_coins_search(message: types.Message, state: FSMContext):
     db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
     await state.set_state(CoinSearch.waiting_for_symbol)
     await message.answer(
-        "💰 <b>Coin qidiruv</b>\n\nIstalgan coin/token belgisini kiriting👇\n"
-        "<i>Masalan: BTC, ETH, SOL, PEPE, WIF, 1INCH, POPCAT...</i>\n"
-        "Barcha kripto va tokenlar qo'llab-quvvatlanadi.",
+        "💰 <b>Coin qidiruv</b>\n\nIstalgan coin/token belgisini kiriting 👇\n"
+        "<i>Masalan: BTC, ETH, SOL, PEPE, WIF, 1INCH, POPCAT...</i>",
         parse_mode="HTML",
         reply_markup=back_keyboard()
     )
@@ -160,7 +161,7 @@ async def search_coin(message: types.Message, state: FSMContext):
     coin = message.text.upper().strip().lstrip("$")
 
     if not COIN_RE.match(coin):
-        return await message.answer("❌ To'g'ri coin belgisini kiriting (masalan: BTC, 1INCH, PEPE)")
+        return await message.answer("❌ Noto'g'ri belgi. Masalan: <b>BTC</b>, <b>1INCH</b>, <b>PEPE</b>", parse_mode="HTML")
     
     # Daily limit check for free users (5 views/day). Premium and admin exempt.
     u = db.execute("SELECT is_premium, daily_views, last_view_date FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
@@ -176,7 +177,7 @@ async def search_coin(message: types.Message, state: FSMContext):
             kb = InlineKeyboardBuilder()
             kb.button(text="💎 Premium", callback_data="buy_premium")
             kb.adjust(1)
-            return await message.answer("⚠️ Bugun bepul limit (5 ta) tugadi. Iltimos ertaga qayta urinib ko'ring yoki Premium oling👇", parse_mode="HTML", reply_markup=kb.as_markup())
+            return await message.answer("⚠️ <b>Bugungi bepul limit tugadi</b> (5 ta).\n\nErtaga qayta urining yoki 💎 Premium oling 👇", parse_mode="HTML", reply_markup=kb.as_markup())
     
     loading = await message.answer("🔍 Qidirilmoqda...")
     
@@ -193,23 +194,23 @@ async def search_coin(message: types.Message, state: FSMContext):
                 kb = InlineKeyboardBuilder()
                 lines = []
                 for s in suggs:
-                    lines.append(f"• <b>{s['symbol']}</b> - {s['name']}")
+                    lines.append(f"• <b>{s['symbol']}</b> — {s['name']}")
                 return await message.answer(
-                    f"❌ <b>{coin}</b> topilmadi.\n\nBalki shulardan biri:\n"
+                    f"❌ <b>{coin}</b> topilmadi.\n\nBalki shulardan birini nazarda tutgandirsiz:\n"
                     + "\n".join(lines)
                     + "\n\nBelgisini aniq yozib qayta urining.",
                     parse_mode="HTML",
                 )
-            return await message.answer(f"❌ Bu belgi topilmadi. Imloni tekshiring yoki coingecko.com dan aniq tickerni ko'rib qayta urining.", parse_mode="HTML")
+            return await message.answer(f"❌ <b>{coin}</b> topilmadi.\nImloni tekshiring yoki coingecko.com dan aniq tickerni ko'rib qayta urining.", parse_mode="HTML")
 
         d = data[0]
         usd_str = format_price(d.get('usd', 0), 'USD')
         rub_str = format_price(d.get('rub', 0), 'RUB')
         uzs_str = format_price(d.get('uzs', 0), 'UZS')
         coin_name = d.get('name')
-        title = f"💰 <b>{coin}</b>" + (f" ({coin_name})" if coin_name and coin_name.upper() != coin else "")
+        title = f"💰 <b>{coin}</b>" + (f" <i>({coin_name})</i>" if coin_name and coin_name.upper() != coin else "")
 
-        text = f"{title}\n\n💵 USD: <code>{usd_str}</code>\n🇷🇺 RUB: <code>{rub_str}</code>\n🇺🇿 UZS: <code>{uzs_str}</code>"
+        text = f"{title}\n\n💵 <b>USD:</b> <code>{usd_str}</code>\n🇷🇺 <b>RUB:</b> <code>{rub_str}</code>\n🇺🇿 <b>UZS:</b> <code>{uzs_str}</code>"
         # Yagona manbali (ekzotik) coinlar uchun ogohlantirish
         src = (d.get('source') or '')
         if src and '+' not in src:
@@ -235,7 +236,7 @@ async def search_coin(message: types.Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Search error: {e}")
         await loading.delete()
-        await message.answer("❌ Xatolik yuz berdi.")
+        await message.answer("❌ Kechirasiz, xatolik yuz berdi. Birozdan so'ng qayta urining.")
 
 @dp.callback_query(F.data.startswith("notify_"))
 async def add_watchlist(callback: types.CallbackQuery):
@@ -284,10 +285,10 @@ async def auto_notify(message: types.Message):
     
     text = "<b>🔔 Avto-xabardorlik</b>\n\n"
     if not coins:
-        text += "❌ Hech qanday coin yo'q.\n📊 Avval coin qo'shing."
+        text += "Hozircha kuzatuvda coin yo'q.\n📊 Avval narx qidirib, <b>🔔 Kuzatuvga qo'shish</b> ni bosing."
         kb = InlineKeyboardBuilder()
     else:
-        text += f"🕒 Interval: {interval}s\n📊 Coinlar: {len(coins)} ta\n\nO'chirish:"
+        text += f"🕒 Interval: <b>{interval}s</b>\n📊 Kuzatuvda: <b>{len(coins)} ta</b>\n\nO'chirish uchun bosing 👇"
         kb = InlineKeyboardBuilder()
         for c in coins:
             kb.button(text=f"❌ {c[0]}", callback_data=f"remove_{c[0]}")
@@ -330,7 +331,17 @@ async def profile(message: types.Message):
     username = message.from_user.username or "N/A"
     user_id = message.from_user.id
 
-    text = f"<b>👤 ISM    {full_name}</b>\n📞 TELEFON     {phone}\n💬 USERNAME    @{username}\n🆔ID-raqam     {user_id}\n⭐OBUNA     {status}\n⏳MUDDAT     obuna {expire}\n🕒INTERVAL     {interval_min}s\n👁SO'ROVLAR     {view_count}"
+    text = (
+        f"👤 <b>Profil</b>\n\n"
+        f"📝 Ism: <b>{full_name}</b>\n"
+        f"📞 Telefon: <code>{phone}</code>\n"
+        f"💬 Username: @{username}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"⭐ Obuna: {status}\n"
+        f"⏳ Muddat: {expire}\n"
+        f"🕒 Interval: {interval_min}s\n"
+        f"👁 So'rovlar: {view_count}"
+    )
     
     kb = InlineKeyboardBuilder()
     kb.button(text="📝 Ismni tahrirlash", callback_data="edit_name")
@@ -343,7 +354,7 @@ async def profile(message: types.Message):
 
 @dp.callback_query(F.data == "edit_name")
 async def edit_name(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("📝 Yangi ism:", reply_markup=back_keyboard())
+    await callback.message.answer("📝 Yangi ismingizni kiriting:", reply_markup=back_keyboard())
     await state.set_state(EditProfile.name)
     await callback.answer()
 
@@ -351,7 +362,7 @@ async def edit_name(callback: types.CallbackQuery, state: FSMContext):
 async def update_name(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
-        return await message.answer("Bekor qilindi", reply_markup=main_menu(message.from_user.id))
+        return await message.answer("❌ Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
     
     db.execute("UPDATE Users SET full_name=? WHERE id=?", (message.text, message.from_user.id), commit=True)
     await message.answer("✅ Yangilandi!", reply_markup=main_menu(message.from_user.id))
@@ -363,33 +374,42 @@ async def edit_interval(callback: types.CallbackQuery, state: FSMContext):
     u = db.execute("SELECT is_premium FROM Users WHERE id=?", (callback.from_user.id,), fetchone=True)
     
     if callback.from_user.id == PRIMARY_ADMIN or (u and u[0]):
-        await callback.message.answer(f"🕒 Yangi interval (min {MIN_INTERVAL}s):", reply_markup=back_keyboard())
+        await callback.message.answer(f"🕒 Yangi intervalni soniyada kiriting (min: {MIN_INTERVAL}s):", reply_markup=back_keyboard())
         await state.set_state(EditProfile.interval)
     else:
-        await callback.message.answer("⚠️ Faqat Premium!", parse_mode="HTML")
+        await callback.message.answer("⚠️ Bu funksiya faqat 💎 <b>Premium</b> obunachilar uchun!", parse_mode="HTML")
     await callback.answer()
 
 @dp.message(EditProfile.interval)
 async def update_interval(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
-        return await message.answer("Bekor qilindi", reply_markup=main_menu(message.from_user.id))
-    
+        return await message.answer("❌ Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
+
     if not message.text.isdigit():
-        return await message.answer("❌ Faqat raqam!")
-    
+        return await message.answer("❌ Faqat raqam kiriting!")
+
     val = int(message.text)
     if val < MIN_INTERVAL:
-        return await message.answer(f"⚠️ Min {MIN_INTERVAL}s!")
-    
+        return await message.answer(f"⚠️ Minimal interval: {MIN_INTERVAL}s!")
+
     db.execute("UPDATE Users SET interval_min=? WHERE id=?", (val, message.from_user.id), commit=True)
-    await message.answer(f"✅ Interval: {val}s", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+    await message.answer(f"✅ Interval yangilandi: <b>{val}s</b>", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
     await state.clear()
 
 # ==================== PREMIUM ====================
 @dp.callback_query(F.data == "buy_premium")
 async def premium_plans(callback: types.CallbackQuery):
-    text = "💎 <b>Premium</b>\n❗️❗️❗️\nPastdagi karta raqamga ko'rsatilgan tarifdagi miqdorni tashlab screenshotni botga tashlang\n❗️Screenshotda karta-raqam, Ism-Familiya aniq ko'rinishi kerak\nKarta raqam💳  <code>9860350142320406</code>\nKarta Egasining Ism, Familiyasi  <code>Ismoilova.F.</code>"
+    text = (
+        "💎 <b>Premium obuna</b>\n\n"
+        "<b>Qadamlar:</b>\n"
+        "1️⃣ Pastdagi tugmalardan tarifni tanlang\n"
+        "2️⃣ Karta raqamga to'lov qiling\n"
+        "3️⃣ Chek screenshot'ini shu yerga yuboring\n\n"
+        "💳 Karta raqam: <code>9860350142320406</code>\n"
+        "👤 Ega: <code>Ismoilova.F.</code>\n\n"
+        "❗️ Screenshot'da karta raqam va ism-familiya aniq ko'rinishi shart."
+    )
     plans = [("⭐ 1 oy - 5 000", "30"), ("🌙 2 oy - 10 000", "60"), ("🎁 3 oy - 15 000", "90"), 
              ("☀️ 6 oy - 20 000", "180"), ("💎 1 yil - 40 000", "365")]
     kb = InlineKeyboardBuilder()
@@ -402,7 +422,7 @@ async def premium_plans(callback: types.CallbackQuery):
 async def select_plan(callback: types.CallbackQuery, state: FSMContext):
     plan = callback.data.split("_")[1]
     await state.update_data(plan=plan)
-    await callback.message.answer(f"✅ Tanlandi: {plan} kun\n📸 Chekni yuboring:")
+    await callback.message.answer(f"✅ Tanlandi: <b>{plan} kun</b>\n\n📸 Endi to'lov cheki screenshot'ini yuboring:", parse_mode="HTML")
     await state.set_state(PremiumOrder.waiting_screenshot)
     await callback.answer()
 
@@ -493,7 +513,7 @@ async def handle_payment(message: types.Message, state: FSMContext):
         await bot.send_photo(PRIMARY_ADMIN, message.photo[-1].file_id,
             caption=caption,
             reply_markup=kb.as_markup())
-        await message.answer("✅ Yuborildi! Admin tomonidan tasdiqlanishini kuting.", reply_markup=main_menu(message.from_user.id))
+        await message.answer("✅ <b>Yuborildi!</b> Admin tasdiqlagach xabar beramiz, kuting. ⏳", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
     except Exception as e:
         logger.error(f"Error sending payment to admin: {e}")
         await message.answer("❌ Xatolik", reply_markup=main_menu(message.from_user.id))
@@ -563,11 +583,11 @@ async def manage_user(callback: types.CallbackQuery):
     status = "💎 Premium" if is_prem_flag else "🆓 Oddiy"
 
     text = (
-        f"<b>👤ISM   {full_name}</b>\n"
-        f"📞TELEFON   {phone}\n"
-        f"💬USERNAME   @{username_display}\n"
-        f"🆔ID-raqam   {user_id}\n"
-        f"⭐OBUNA   {status}"
+        f"👤 <b>{full_name}</b>\n\n"
+        f"📞 Telefon: <code>{phone}</code>\n"
+        f"💬 Username: @{username_display}\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"⭐ Obuna: {status}"
     )
 
     # Show premium metadata if available
@@ -575,13 +595,13 @@ async def manage_user(callback: types.CallbackQuery):
         plan_text = f"{premium_plan_days} kun" if premium_plan_days else "Noma'lum"
         given_text = premium_given_at or "N/A"
         until_text = premium_until or "N/A"
-        text += f"\n⏳Tugash Muddati: {until_text}\n📦Tur: {plan_text}\n🗓Berilgan: {given_text}"
+        text += f"\n⏳ Tugaydi: {until_text}\n📦 Tarif: {plan_text}\n🗓 Berilgan: {given_text}"
 
     # Show last payment details if available
     if last_payment_amount or last_payment_rate:
-        text += f"\n💸Summa: {last_payment_amount or 'N/A'}\n💱Kurs: {last_payment_rate or 'N/A'}"
+        text += f"\n💸 Summa: {last_payment_amount or 'N/A'}\n💱 Kurs: {last_payment_rate or 'N/A'}"
 
-    text += f"\n🕒INTERVAL   {interval_min}s\n👁SO'ROVLAR   {view_count}"
+    text += f"\n🕒 Interval: {interval_min}s\n👁 So'rovlar: {view_count}"
 
     kb = InlineKeyboardBuilder()
     if not is_prem_flag:
@@ -601,7 +621,7 @@ async def give_premium_menu(callback: types.CallbackQuery):
     for name, days in plans:
         kb.button(text=name, callback_data=f"accept_{uid}_{days}")
     kb.adjust(1)
-    await callback.message.edit_text("Muddat:", reply_markup=kb.as_markup())
+    await callback.message.edit_text("🎁 Premium muddatini tanlang:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_payment(callback: types.CallbackQuery):
@@ -618,14 +638,14 @@ async def accept_payment(callback: types.CallbackQuery):
         "UPDATE Users SET is_premium=1, premium_until=?, premium_plan_days=?, premium_given_at=? WHERE id=?",
         (until, days, given_at, uid), commit=True
     )
-    await bot.send_message(uid, f"🎉 Premium faol ({days} kun)!")
+    await bot.send_message(uid, f"🎉 Tabriklaymiz! Premium obuna faol ({days} kun).")
     await callback.answer("✅ Tasdiqlandi")
     await callback.message.delete()
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_payment(callback: types.CallbackQuery):
     uid = int(callback.data.split("_")[1])
-    await bot.send_message(uid, "❌ Chek rad etildi! Iltimos, to'lovni qayta amalga oshiring. Yoki admin bilan bog'laning. @c0mrade_p2p")
+    await bot.send_message(uid, "❌ To'lovingiz rad etildi. Iltimos, qayta urinib ko'ring yoki admin bilan bog'laning: @c0mrade_p2p")
     await callback.message.delete()
 
 @dp.callback_query(F.data.startswith("take_"))
@@ -634,7 +654,7 @@ async def take_premium(callback: types.CallbackQuery):
     # Clear premium flags and metadata
     db.execute("UPDATE Users SET is_premium=0, premium_until=NULL, premium_plan_days=NULL, premium_given_at=NULL WHERE id=?", (uid,), commit=True)
     # Notify the user that admin will remove their premium
-    await bot.send_message(uid, "Admin sizdan premium obunasini olib qoydi😞")
+    await bot.send_message(uid, "😞 Admin premium obunangizni bekor qildi.")
     await callback.answer("✅ Olib tashlandi")
     await callback.message.delete()
 
@@ -646,12 +666,12 @@ async def back_admin(callback: types.CallbackQuery):
 @dp.message(F.text == "🏠 Asosiy menyu")
 async def back_main(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Asosiy menyu", reply_markup=main_menu(message.from_user.id))
+    await message.answer("🏠 Asosiy menyu", reply_markup=main_menu(message.from_user.id))
 
 # ==================== CATCH ALL ====================
 @dp.message(F.text)
 async def catch_all(message: types.Message):
-    await message.answer("Tushunarsiz buyruq")
+    await message.answer("❓ Tushunarsiz buyruq. Iltimos, pastdagi menyudan foydalaning 👇", reply_markup=main_menu(message.from_user.id))
 
 # ==================== MAIN ====================
 async def main():
