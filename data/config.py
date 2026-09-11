@@ -41,3 +41,7 @@ ADMINS = _optional_int_list("ADMINS")
 
 # Hozircha ishlatilmaydi (reserved for future channel features)
 CHANNELS = [c.strip() for c in (os.getenv("CHANNELS") or "").split(",") if c.strip()]
+
+# Bo'sh bo'lsa SQLite (local dev), to'ldirilsa Postgres (Supabase/Render).
+# Supabase pooler string tavsiya etiladi (IPv4 + 6543 port).
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip() or None
