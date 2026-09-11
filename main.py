@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import sqlite3
 from aiogram import types, F
@@ -14,7 +15,16 @@ from loader import bot, dp, db
 from utils.api.crypto import get_real_prices, suggest_coins
 import re
 
-COIN_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-_$]{0,14}$")
+COIN_RE = re.compile(r"^[A-Z0-9][A-Z0-9\-]{0,19}$")
+
+# Menyu tugmalari: CoinSearch state'da bosilsa search o'rniga
+# tegishli handler ishlashi uchun search_coin'dan exclude qilinadi.
+MENU_BUTTONS = frozenset({
+    "📊 Narxlarni ko'rish",
+    "🔔 Avto-xabardorlik",
+    "👤 Profile",
+    "👨‍💼 USERS Admin Panel",
+})
 
 # Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -100,8 +110,8 @@ def format_price(value, currency='USD'):
 @dp.message(Command("start"))
 async def start_bot(message: types.Message, state: FSMContext):
     await state.clear()
-    user = db.execute("SELECT * FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
-    
+    user = db.execute("SELECT full_name FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
+
     if not user:
         kb = [[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]]
         await message.answer(
@@ -113,11 +123,14 @@ async def start_bot(message: types.Message, state: FSMContext):
         )
         await state.set_state(Register.phone)
     else:
-        await message.answer(f"👋 Xush kelibsiz, <b>{user[3]}</b>!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+        await message.answer(f"👋 Xush kelibsiz, <b>{html.escape(user[0] or '', quote=False)}</b>!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
 
 @dp.message(Register.phone, F.contact)
 async def get_phone(message: types.Message, state: FSMContext):
     """Register the user immediately using the shared contact and Telegram full name."""
+    # Begona kontaktni o'z nomidan yozib qo'yishdan himoya
+    if message.contact.user_id and message.contact.user_id != message.from_user.id:
+        return await message.answer("⚠️ Iltimos, o'z raqamingizni ulashing 👇")
     phone = message.contact.phone_number
     full_name = message.from_user.full_name or message.from_user.username or "N/A"
     username = message.from_user.username or "N/A"
@@ -137,6 +150,16 @@ async def get_phone(message: types.Message, state: FSMContext):
         await state.clear()
 
 
+@dp.message(Register.phone)
+async def get_phone_fallback(message: types.Message):
+    """Kontakt o'rniga boshqa narsa yuborilsa - qayta so'rash (state saqlanadi)."""
+    kb = [[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]]
+    await message.answer(
+        "📱 Iltimos, pastdagi tugma orqali raqamingizni ulashing 👇",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+    )
+
+
 # ==================== COIN SEARCH ====================
 @dp.message(F.text == "📊 Narxlarni ko'rish")
 async def show_coins_search(message: types.Message, state: FSMContext):
@@ -152,7 +175,7 @@ async def show_coins_search(message: types.Message, state: FSMContext):
         reply_markup=back_keyboard()
     )
 
-@dp.message(CoinSearch.waiting_for_symbol, F.text)
+@dp.message(CoinSearch.waiting_for_symbol, F.text, ~F.text.in_(MENU_BUTTONS))
 async def search_coin(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
@@ -183,7 +206,7 @@ async def search_coin(message: types.Message, state: FSMContext):
                 kb = InlineKeyboardBuilder()
                 lines = []
                 for s in suggs:
-                    lines.append(f"• <b>{s['symbol']}</b> — {s['name']}")
+                    lines.append(f"• <b>{html.escape(s['symbol'], quote=False)}</b> — {html.escape(s['name'], quote=False)}")
                 return await message.answer(
                     f"❌ <b>{coin}</b> topilmadi.\n\nBalki shulardan birini nazarda tutgandirsiz:\n"
                     + "\n".join(lines)
@@ -197,7 +220,8 @@ async def search_coin(message: types.Message, state: FSMContext):
         rub_str = format_price(d.get('rub', 0), 'RUB')
         uzs_str = format_price(d.get('uzs', 0), 'UZS')
         coin_name = d.get('name')
-        title = f"💰 <b>{coin}</b>" + (f" <i>({coin_name})</i>" if coin_name and coin_name.upper() != coin else "")
+        safe_coin = html.escape(coin, quote=False)
+        title = f"💰 <b>{safe_coin}</b>" + (f" <i>({html.escape(coin_name, quote=False)})</i>" if coin_name and coin_name.upper() != coin else "")
 
         text = f"{title}\n\n💵 <b>USD:</b> <code>{usd_str}</code>\n🇷🇺 <b>RUB:</b> <code>{rub_str}</code>\n🇺🇿 <b>UZS:</b> <code>{uzs_str}</code>"
         # Yagona manbali (ekzotik) coinlar uchun ogohlantirish
@@ -205,7 +229,7 @@ async def search_coin(message: types.Message, state: FSMContext):
         if src and '+' not in src:
             text += f"\n\n🔎 Manba: {src} (kam likvid - narx taxminiy)"
 
-        exists = db.execute("SELECT * FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?", 
+        exists = db.execute("SELECT 1 FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?", 
                            (message.from_user.id, coin), fetchone=True)
         
         kb = InlineKeyboardBuilder()
@@ -323,8 +347,8 @@ async def profile(message: types.Message):
 
     text = (
         f"👤 <b>Profil</b>\n\n"
-        f"📝 Ism: <b>{full_name}</b>\n"
-        f"📞 Telefon: <code>{phone}</code>\n"
+        f"📝 Ism: <b>{html.escape(full_name or '', quote=False)}</b>\n"
+        f"📞 Telefon: <code>{html.escape(phone or '', quote=False)}</code>\n"
         f"💬 Username: @{username}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
         f"🕒 Interval: {interval_min}s\n"
@@ -350,13 +374,17 @@ async def edit_name(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditProfile.name)
     await callback.answer()
 
-@dp.message(EditProfile.name)
+@dp.message(EditProfile.name, F.text)
 async def update_name(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
         return await message.answer("❌ Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
-    
-    db.execute("UPDATE Users SET full_name=? WHERE id=?", (message.text, message.from_user.id), commit=True)
+
+    name = message.text.strip()[:64]
+    if not name:
+        return await message.answer("❌ Bo'sh ism bo'lmaydi!")
+
+    db.execute("UPDATE Users SET full_name=? WHERE id=?", (name, message.from_user.id), commit=True)
     await message.answer("✅ Yangilandi!", reply_markup=main_menu(message.from_user.id))
     await state.clear()
 
@@ -373,18 +401,19 @@ async def edit_interval(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditProfile.interval)
     await callback.answer()
 
-@dp.message(EditProfile.interval)
+@dp.message(EditProfile.interval, F.text)
 async def update_interval(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
         return await message.answer("❌ Bekor qilindi.", reply_markup=main_menu(message.from_user.id))
 
-    if not message.text.isdigit():
+    try:
+        val = int(message.text.strip())
+    except (ValueError, AttributeError):
         return await message.answer("❌ Faqat raqam kiriting!")
 
-    val = int(message.text)
-    if val < MIN_INTERVAL:
-        return await message.answer(f"⚠️ Minimal interval: {MIN_INTERVAL}s!")
+    if not MIN_INTERVAL <= val <= 86400:
+        return await message.answer(f"⚠️ Interval {MIN_INTERVAL}s dan 86400s gacha bo'lishi kerak!")
 
     db.execute("UPDATE Users SET interval_min=? WHERE id=?", (val, message.from_user.id), commit=True)
     await message.answer(f"✅ Interval yangilandi: <b>{val}s</b>", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
@@ -403,7 +432,7 @@ def _admin_page_keyboard(page: int):
         (ADMIN_PAGE_SIZE, page * ADMIN_PAGE_SIZE), fetchall=True)
     kb = InlineKeyboardBuilder()
     for u in users:
-        kb.button(text=f"👤 {u[1]} ({u[2]})", callback_data=f"user_{u[0]}")
+        kb.button(text=f"👤 {(u[1] or '')[:32]} ({u[2]})", callback_data=f"user_{u[0]}")
     kb.adjust(1)
     nav = []
     if page > 0:
@@ -464,8 +493,8 @@ async def manage_user(callback: types.CallbackQuery):
     username_display = username or "N/A"
 
     text = (
-        f"👤 <b>{full_name}</b>\n\n"
-        f"📞 Telefon: <code>{phone}</code>\n"
+        f"👤 <b>{html.escape(full_name or '', quote=False)}</b>\n\n"
+        f"📞 Telefon: <code>{html.escape(phone or '', quote=False)}</code>\n"
         f"💬 Username: @{username_display}\n"
         f"🆔 ID: <code>{user_id}</code>\n"
         f"🕒 Interval: {interval_min}s\n"
