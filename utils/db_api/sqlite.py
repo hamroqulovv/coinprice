@@ -72,10 +72,21 @@ class Database:
         sql_prefs = """
         CREATE TABLE IF NOT EXISTS CryptoPreferences (
             user_id INTEGER,
-            coin_symbol TEXT
+            coin_symbol TEXT,
+            last_price REAL,
+            last_checked_at DATETIME
         );
         """
         self.execute(sql_prefs, commit=True)
+        # Mavjud DB'lar uchun yangi ustunlar (scheduler holati DB'da saqlanadi)
+        try:
+            self.execute("ALTER TABLE CryptoPreferences ADD COLUMN last_price REAL", commit=True)
+        except Exception:
+            pass
+        try:
+            self.execute("ALTER TABLE CryptoPreferences ADD COLUMN last_checked_at DATETIME", commit=True)
+        except Exception:
+            pass
 
     def clear_user_preferences(self, user_id):
         sql = "DELETE FROM CryptoPreferences WHERE user_id=?"

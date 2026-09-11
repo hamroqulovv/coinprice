@@ -9,8 +9,10 @@ from utils.api.crypto import get_real_prices
 
 logger = logging.getLogger(__name__)
 
-# Har bir foydalanuvchi uchun oxirgi narxlar
-user_last_prices = {}
+# Oxirgi narxlar CryptoPreferences.last_price ustunida saqlanadi (DB),
+# shuning uchun restart'da "first time" spam-xabarlar yuborilmaydi.
+# user_next_send ataylab memory'da: restart'da yo'qolsa ham faqat keyingi
+# tekshirish vaqti qayta hisoblanadi, noto'g'ri xabar yuborilmaydi.
 user_next_send = {}
 
 # Bir vaqtda nechta userga xabar yuborish (Telegram rate-limit himoyasi)
@@ -46,8 +48,9 @@ async def send_price_updates():
             
             current_time = datetime.now()
 
-            # 1-pass: intervali kelgan userlar va ularning coinlarini yig'amiz
-            due_users = []  # list of (user_id, interval_sec, coin_list)
+            # 1-pass: intervali kelgan userlar va ularning coinlarini yig'amiz.
+            # last_price DB'dan o'qiladi (restart'dan omon qoladi).
+            due_users = []  # list of (user_id, interval_sec, coin_list, last_map)
             for user in users:
                 user_id = user[0]
                 interval_sec = user[1]
@@ -61,17 +64,19 @@ async def send_price_updates():
                     continue
 
                 try:
-                    # Coinlarni olish
-                    coins = db.execute(
-                        "SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?",
+                    # Coinlar + oxirgi ma'lum narxlarni olish
+                    rows = db.execute(
+                        "SELECT coin_symbol, last_price FROM CryptoPreferences WHERE user_id=?",
                         (user_id,),
                         fetchall=True
                     )
 
-                    if not coins:
+                    if not rows:
                         continue
 
-                    due_users.append((user_id, interval_sec, [c[0] for c in coins]))
+                    coin_list = [r[0] for r in rows]
+                    last_map = {r[0]: r[1] for r in rows if r[1]}
+                    due_users.append((user_id, interval_sec, coin_list, last_map))
                 except Exception as e:
                     logger.error(f"Error loading watchlist for user {user_id}: {e}")
                     user_next_send[user_id] = current_time + timedelta(minutes=5)
@@ -94,16 +99,13 @@ async def send_price_updates():
             # Bitta userga xabar yuborish (network I/O) boshqalarni bloklamaydi.
             semaphore = asyncio.Semaphore(USER_CONCURRENCY)
 
-            async def _process_user(user_id, interval_sec, coin_list):
+            async def _process_user(user_id, interval_sec, coin_list, last_map):
                 async with semaphore:
                     try:
-                        # Foydalanuvchining oxirgi narxlarini olish
-                        if user_id not in user_last_prices:
-                            user_last_prices[user_id] = {}
-
                         # O'zgarishlarni tekshirish
                         changes_detected = []
                         message_lines = []
+                        checked_at = current_time.strftime("%Y-%m-%d %H:%M:%S")
 
                         for coin in coin_list:
                             coin_data = price_by_coin.get(coin)
@@ -111,7 +113,7 @@ async def send_price_updates():
                                 continue
 
                             new_price = coin_data['usd']
-                            old_price = user_last_prices[user_id].get(coin)
+                            old_price = last_map.get(coin)
 
                             # Narx o'zgarishini hisoblash (minimal 0.01% o'zgarish)
                             if old_price:
@@ -144,8 +146,15 @@ async def send_price_updates():
                                     'sign': ""
                                 })
 
-                            # Oxirgi narxni saqlash
-                            user_last_prices[user_id][coin] = new_price
+                            # Oxirgi narxni DB'ga saqlash (restart'dan omon qoladi)
+                            try:
+                                db.execute(
+                                    "UPDATE CryptoPreferences SET last_price=?, last_checked_at=? WHERE user_id=? AND coin_symbol=?",
+                                    (new_price, checked_at, user_id, coin),
+                                    commit=True,
+                                )
+                            except Exception as e:
+                                logger.error(f"Error saving last_price for user {user_id}, coin {coin}: {e}")
 
                         # Agar o'zgarish bo'lsa - xabar yuborish
                         if changes_detected:
@@ -206,7 +215,7 @@ async def send_price_updates():
                         user_next_send[user_id] = current_time + timedelta(minutes=5)
 
             await asyncio.gather(
-                *(_process_user(u, iv, cl) for u, iv, cl in due_users)
+                *(_process_user(u, iv, cl, lm) for u, iv, cl, lm in due_users)
             )
             
         except Exception as e:
