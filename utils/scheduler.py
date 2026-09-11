@@ -42,139 +42,161 @@ async def send_price_updates():
                 continue
             
             current_time = datetime.now()
-            
+
+            # 1-pass: intervali kelgan userlar va ularning coinlarini yig'amiz
+            due_users = []  # list of (user_id, interval_sec, coin_list)
             for user in users:
                 user_id = user[0]
                 interval_sec = user[1]
-                
+
                 # Keyingi tekshirish vaqtini sozlash
                 if user_id not in user_next_send:
                     user_next_send[user_id] = current_time
-                
+
                 # Vaqt yetib kelganmi?
-                if current_time >= user_next_send[user_id]:
-                    try:
-                        # Coinlarni olish
-                        coins = db.execute(
-                            "SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?",
-                            (user_id,),
-                            fetchall=True
-                        )
-                        
-                        if not coins:
+                if current_time < user_next_send[user_id]:
+                    continue
+
+                try:
+                    # Coinlarni olish
+                    coins = db.execute(
+                        "SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?",
+                        (user_id,),
+                        fetchall=True
+                    )
+
+                    if not coins:
+                        continue
+
+                    due_users.append((user_id, interval_sec, [c[0] for c in coins]))
+                except Exception as e:
+                    logger.error(f"Error loading watchlist for user {user_id}: {e}")
+                    user_next_send[user_id] = current_time + timedelta(minutes=5)
+
+            if not due_users:
+                continue
+
+            # 2-pass: BARCHA due userlardagi DISTINCT coinlarni BITTA call'da olamiz.
+            # Har bir coin tashqi API'lardan tick boshiga atigi 1 marta so'raladi
+            # (crypto.py dagi 15s per-coin cache ikkinchi himoya qatlami).
+            distinct_coins = list(dict.fromkeys(c for _, _, cl in due_users for c in cl))
+            try:
+                fetched = get_real_prices(distinct_coins)
+            except Exception as e:
+                logger.error(f"Scheduler batch price fetch error: {e}")
+                continue
+            price_by_coin = dict(zip(distinct_coins, fetched))
+
+            # 3-pass: har bir userga o'z coinlari bo'yicha xabar
+            for user_id, interval_sec, coin_list in due_users:
+                try:
+                    # Foydalanuvchining oxirgi narxlarini olish
+                    if user_id not in user_last_prices:
+                        user_last_prices[user_id] = {}
+
+                    # O'zgarishlarni tekshirish
+                    changes_detected = []
+                    message_lines = []
+
+                    for coin in coin_list:
+                        coin_data = price_by_coin.get(coin)
+                        if not coin_data:
                             continue
-                        
-                        coin_list = [c[0] for c in coins]
-                        
-                        # Yangi narxlarni olish
-                        new_prices = get_real_prices(coin_list)
-                        
-                        # Foydalanuvchining oxirgi narxlarini olish
-                        if user_id not in user_last_prices:
-                            user_last_prices[user_id] = {}
-                        
-                        # O'zgarishlarni tekshirish
-                        changes_detected = []
-                        message_lines = []
-                        
-                        for i, coin in enumerate(coin_list):
-                            if not new_prices[i]:
-                                continue
-                            
-                            new_price = new_prices[i]['usd']
-                            old_price = user_last_prices[user_id].get(coin)
-                            
-                            # Narx o'zgarishini hisoblash (minimal 0.01% o'zgarish)
-                            if old_price:
-                                change_percent = calculate_price_change(old_price, new_price)
-                                
-                                # 0.01% dan katta o'zgarish bo'lsa
-                                if change_percent >= 0.01:
-                                    price_diff = new_price - old_price
-                                    emoji = "📈" if price_diff > 0 else "📉"
-                                    sign = "+" if price_diff > 0 else ""
-                                    
-                                    changes_detected.append(coin)
-                                    message_lines.append({
-                                        'coin': coin,
-                                        'emoji': emoji,
-                                        'price': new_prices[i],
-                                        'change': change_percent,
-                                        'diff': price_diff,
-                                        'sign': sign
-                                    })
-                            else:
-                                # Birinchi marta - har doim yuborish
+
+                        new_price = coin_data['usd']
+                        old_price = user_last_prices[user_id].get(coin)
+
+                        # Narx o'zgarishini hisoblash (minimal 0.01% o'zgarish)
+                        if old_price:
+                            change_percent = calculate_price_change(old_price, new_price)
+
+                            # 0.01% dan katta o'zgarish bo'lsa
+                            if change_percent >= 0.01:
+                                price_diff = new_price - old_price
+                                emoji = "📈" if price_diff > 0 else "📉"
+                                sign = "+" if price_diff > 0 else ""
+
                                 changes_detected.append(coin)
                                 message_lines.append({
                                     'coin': coin,
-                                    'emoji': "💰",
-                                    'price': new_prices[i],
-                                    'change': None,
-                                    'diff': None,
-                                    'sign': ""
+                                    'emoji': emoji,
+                                    'price': coin_data,
+                                    'change': change_percent,
+                                    'diff': price_diff,
+                                    'sign': sign
                                 })
-                            
-                            # Oxirgi narxni saqlash
-                            user_last_prices[user_id][coin] = new_price
-                        
-                        # Agar o'zgarish bo'lsa - xabar yuborish
-                        if changes_detected:
-                            message_text = "📊 <b>Narx o'zgarishlari</b>\n\n"
-                            
-                            for line in message_lines:
-                                p = line['price']
-
-                                # main.py format_price() bilan bir xil mantik -
-                                # display consistency uchun (accuracy yo'qolmasligi uchun)
-                                if p['usd'] >= 1:
-                                    usd_str = f"${p['usd']:,.2f}"
-                                elif p['usd'] >= 0.01:
-                                    usd_str = f"${p['usd']:,.4f}"
-                                elif p['usd'] >= 0.0001:
-                                    usd_str = f"${p['usd']:,.6f}"
-                                else:
-                                    usd_str = f"${p['usd']:.8f}"
-
-                                if p['rub'] >= 1:
-                                    rub_str = f"{p['rub']:,.2f} ₽"
-                                elif p['rub'] >= 0.01:
-                                    rub_str = f"{p['rub']:,.4f} ₽"
-                                else:
-                                    rub_str = f"{p['rub']:.6f} ₽"
-
-                                if p['uzs'] >= 1000:
-                                    uzs_str = f"{int(round(p['uzs'])):,} so'm"
-                                elif p['uzs'] >= 1:
-                                    uzs_str = f"{p['uzs']:,.2f} so'm"
-                                else:
-                                    uzs_str = f"{p['uzs']:.4f} so'm"
-
-                                nm = p.get('name')
-                                title = f"{line['emoji']} <b>{line['coin']}</b>" + (f" ({nm})" if nm and nm.upper() != line['coin'] else "")
-                                message_text += title + "\n"
-                                message_text += f"   💵 {usd_str}\n"
-
-                                if line['change'] is not None:
-                                    message_text += f"   📊 {line['sign']}{line['change']:.2f}%\n"
-
-                                message_text += f"   🇺🇿 {uzs_str}\n"
-                                message_text += f"   🇷🇺 {rub_str}\n\n"
-                            
-                            message_text += f"🕒 <i>Keyingi tekshirish: {interval_sec}s</i>"
-                            
-                            await bot.send_message(user_id, message_text, parse_mode="HTML")
-                            logger.info(f"✅ Sent {len(changes_detected)} price changes to user {user_id}")
                         else:
-                            # O'zgarish yo'q - silent log
-                            logger.debug(f"No changes for user {user_id}")
-                        
-                        # Keyingi tekshirish vaqti
-                        user_next_send[user_id] = current_time + timedelta(seconds=interval_sec)
-                        
-                    except Exception as e:
-                        logger.error(f"Error for user {user_id}: {e}")
-                        user_next_send[user_id] = current_time + timedelta(minutes=5)
+                            # Birinchi marta - har doim yuborish
+                            changes_detected.append(coin)
+                            message_lines.append({
+                                'coin': coin,
+                                'emoji': "💰",
+                                'price': coin_data,
+                                'change': None,
+                                'diff': None,
+                                'sign': ""
+                            })
+
+                        # Oxirgi narxni saqlash
+                        user_last_prices[user_id][coin] = new_price
+
+                    # Agar o'zgarish bo'lsa - xabar yuborish
+                    if changes_detected:
+                        message_text = "📊 <b>Narx o'zgarishlari</b>\n\n"
+
+                        for line in message_lines:
+                            p = line['price']
+
+                            # main.py format_price() bilan bir xil mantik -
+                            # display consistency uchun (accuracy yo'qolmasligi uchun)
+                            if p['usd'] >= 1:
+                                usd_str = f"${p['usd']:,.2f}"
+                            elif p['usd'] >= 0.01:
+                                usd_str = f"${p['usd']:,.4f}"
+                            elif p['usd'] >= 0.0001:
+                                usd_str = f"${p['usd']:,.6f}"
+                            else:
+                                usd_str = f"${p['usd']:.8f}"
+
+                            if p['rub'] >= 1:
+                                rub_str = f"{p['rub']:,.2f} ₽"
+                            elif p['rub'] >= 0.01:
+                                rub_str = f"{p['rub']:,.4f} ₽"
+                            else:
+                                rub_str = f"{p['rub']:.6f} ₽"
+
+                            if p['uzs'] >= 1000:
+                                uzs_str = f"{int(round(p['uzs'])):,} so'm"
+                            elif p['uzs'] >= 1:
+                                uzs_str = f"{p['uzs']:,.2f} so'm"
+                            else:
+                                uzs_str = f"{p['uzs']:.4f} so'm"
+
+                            nm = p.get('name')
+                            title = f"{line['emoji']} <b>{line['coin']}</b>" + (f" ({nm})" if nm and nm.upper() != line['coin'] else "")
+                            message_text += title + "\n"
+                            message_text += f"   💵 {usd_str}\n"
+
+                            if line['change'] is not None:
+                                message_text += f"   📊 {line['sign']}{line['change']:.2f}%\n"
+
+                            message_text += f"   🇺🇿 {uzs_str}\n"
+                            message_text += f"   🇷🇺 {rub_str}\n\n"
+
+                        message_text += f"🕒 <i>Keyingi tekshirish: {interval_sec}s</i>"
+
+                        await bot.send_message(user_id, message_text, parse_mode="HTML")
+                        logger.info(f"✅ Sent {len(changes_detected)} price changes to user {user_id}")
+                    else:
+                        # O'zgarish yo'q - silent log
+                        logger.debug(f"No changes for user {user_id}")
+
+                    # Keyingi tekshirish vaqti
+                    user_next_send[user_id] = current_time + timedelta(seconds=interval_sec)
+
+                except Exception as e:
+                    logger.error(f"Error for user {user_id}: {e}")
+                    user_next_send[user_id] = current_time + timedelta(minutes=5)
             
         except Exception as e:
             logger.error(f"Scheduler error: {e}")
