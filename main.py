@@ -506,24 +506,44 @@ async def catch_all(message: types.Message):
 
 # ==================== MAIN ====================
 async def main():
-    db.create_tables()
-    
+    try:
+        db.create_tables()
+    except Exception as e:
+        logger.error(f"Database init failed: {e}")
+        raise SystemExit(1)
+
     # Avto-xabardorlik schedulerni ishga tushirish
     from utils.scheduler import start_scheduler
-    
+    from utils.api.crypto import close_http_session
+
     # Ikkalasini parallel ishga tushirish
     async def run_bot():
         logger.info("🤖 Bot started!")
         await dp.start_polling(bot)
-    
+
     async def run_scheduler():
         await start_scheduler()
-    
+
     # Ikkalasini bir vaqtda ishga tushirish
-    await asyncio.gather(
-        run_bot(),
-        run_scheduler()
-    )
+    try:
+        await asyncio.gather(
+            run_bot(),
+            run_scheduler()
+        )
+    finally:
+        # Toza shutdown: session'lar ochiq qolmaydi
+        try:
+            await dp.storage.close()
+        except Exception as e:
+            logger.debug(f"Storage close: {e}")
+        try:
+            await bot.session.close()
+        except Exception as e:
+            logger.debug(f"Bot session close: {e}")
+        try:
+            await close_http_session()
+        except Exception as e:
+            logger.debug(f"HTTP session close: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
