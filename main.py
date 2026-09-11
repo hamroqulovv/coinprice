@@ -500,18 +500,50 @@ async def handle_payment(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ==================== ADMIN ====================
-@dp.message(F.text == "👨‍💼 USERS Admin Panel")
-async def admin_panel(message: types.Message):
-    if message.from_user.id != PRIMARY_ADMIN:
-        return
-    
-    users = db.execute("SELECT id, full_name, is_premium, view_count FROM Users", fetchall=True)
+ADMIN_PAGE_SIZE = 10
+
+def _admin_page_keyboard(page: int):
+    """Bitta admin sahifasi uchun user tugmalari + Prev/Next navigatsiya."""
+    total = db.execute("SELECT COUNT(*) FROM Users", fetchone=True)[0] or 0
+    pages = max(1, (total + ADMIN_PAGE_SIZE - 1) // ADMIN_PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    users = db.execute(
+        "SELECT id, full_name, is_premium, view_count FROM Users ORDER BY id LIMIT ? OFFSET ?",
+        (ADMIN_PAGE_SIZE, page * ADMIN_PAGE_SIZE), fetchall=True)
     kb = InlineKeyboardBuilder()
     for u in users:
         icon = "💎" if u[2] else "👤"
         kb.button(text=f"{icon} {u[1]} ({u[3]})", callback_data=f"user_{u[0]}")
     kb.adjust(1)
-    await message.answer(f"👥 Users: {len(users)}", reply_markup=kb.as_markup())
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton(text="◀️ Prev", callback_data=f"admin_users_{page - 1}"))
+    if page < pages - 1:
+        nav.append(types.InlineKeyboardButton(text="Next ▶️", callback_data=f"admin_users_{page + 1}"))
+    if nav:
+        kb.row(*nav)
+    return kb.as_markup(), total, page, pages
+
+@dp.message(F.text == "👨‍💼 USERS Admin Panel")
+async def admin_panel(message: types.Message):
+    if message.from_user.id != PRIMARY_ADMIN:
+        return
+
+    markup, total, page, pages = _admin_page_keyboard(0)
+    await message.answer(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+
+@dp.callback_query(F.data.startswith("admin_users_"))
+async def admin_panel_page(callback: types.CallbackQuery):
+    if callback.from_user.id != PRIMARY_ADMIN:
+        await callback.answer()
+        return
+    try:
+        page = int(callback.data.split("_")[-1])
+    except (ValueError, IndexError):
+        page = 0
+    markup, total, page, pages = _admin_page_keyboard(page)
+    await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("user_"))
 async def manage_user(callback: types.CallbackQuery):
