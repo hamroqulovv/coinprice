@@ -68,6 +68,16 @@ def is_admin(user_id):
         return user_id == PRIMARY_ADMIN
 
 # ==================== START & REGISTRATION ====================
+async def _enter_search(message: types.Message, state: FSMContext):
+    """Default rejim: coin qidiruv (start'dan keyin darhol narx ko'rish)."""
+    await state.set_state(CoinSearch.waiting_for_symbol)
+    await message.answer(
+        "💰 <b>Coin qidiruv</b>\n\nIstalgan coin/token belgisini kiriting 👇\n"
+        "<i>Masalan: BTC, ETH, SOL, PEPE, WIF, 1INCH, POPCAT...</i>",
+        parse_mode="HTML",
+        reply_markup=main_menu(message.from_user.id),
+    )
+
 @dp.message(Command("start"))
 async def start_bot(message: types.Message, state: FSMContext):
     await state.clear()
@@ -85,6 +95,7 @@ async def start_bot(message: types.Message, state: FSMContext):
         await state.set_state(Register.phone)
     else:
         await message.answer(f"👋 Xush kelibsiz, <b>{html.escape(user[0] or '', quote=False)}</b>!", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+        await _enter_search(message, state)
 
 @dp.message(Register.phone, F.contact)
 async def get_phone(message: types.Message, state: FSMContext):
@@ -104,12 +115,12 @@ async def get_phone(message: types.Message, state: FSMContext):
             (message.from_user.id, phone, username, full_name, MIN_INTERVAL, 0, 0),
             commit=True
         )
-        await message.answer("✅ <b>Ro'yxatdan o'tdingiz!</b>\n\n📊 Narxlarni ko'rish uchun menyudan foydalaning.", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
+        await message.answer("✅ <b>Ro'yxatdan o'tdingiz!</b>", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
         logger.info(f"New user: {message.from_user.id}")
+        await _enter_search(message, state)
     except Exception as e:
         logger.error(f"Registration error: {e}")
         await message.answer("❌ Xatolik! /start ni qayta yuboring.")
-    finally:
         await state.clear()
 
 
@@ -130,13 +141,7 @@ async def show_coins_search(message: types.Message, state: FSMContext):
     if not is_registered(message.from_user.id):
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
     db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
-    await state.set_state(CoinSearch.waiting_for_symbol)
-    await message.answer(
-        "💰 <b>Coin qidiruv</b>\n\nIstalgan coin/token belgisini kiriting 👇\n"
-        "<i>Masalan: BTC, ETH, SOL, PEPE, WIF, 1INCH, POPCAT...</i>",
-        parse_mode="HTML",
-        reply_markup=back_keyboard()
-    )
+    await _enter_search(message, state)
 
 @dp.message(CoinSearch.waiting_for_symbol, F.text, ~F.text.in_(MENU_BUTTONS))
 async def search_coin(message: types.Message, state: FSMContext):
