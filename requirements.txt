@@ -8,7 +8,7 @@ python-dotenv==1.0.1
 # (requests removed: sync calls blocked the event loop)
 
 # Async support utilities (aiogram ichki ishlatadi, prod barqarorlik uchun)
-aiohttp==3.9.5
+aiohttp==3.14.3
 yarl==1.9.4
 multidict==6.0.5
 
