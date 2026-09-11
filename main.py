@@ -46,8 +46,7 @@ class CoinSearch(StatesGroup):
 
 # ==================== KEYBOARDS ====================
 def main_menu(user_id):
-    kb = [[KeyboardButton(text="📊 Narxlarni ko'rish")],
-          [KeyboardButton(text="🔔 Avto-xabardorlik"), KeyboardButton(text="👤 Profile")]]
+    kb = [[KeyboardButton(text="🔔 Avto-xabardorlik"), KeyboardButton(text="👤 Profile")]]
     if is_admin(user_id):
         kb.append([KeyboardButton(text="👨‍💼 USERS Admin Panel")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
