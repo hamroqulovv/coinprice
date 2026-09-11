@@ -4,8 +4,8 @@ aiogram==3.4.1
 # Environment variables
 python-dotenv==1.0.1
 
-# HTTP requests
-requests==2.32.3
+# HTTP client (async - crypto.py uses shared aiohttp session)
+# (requests removed: sync calls blocked the event loop)
 
 # Async scheduler (tasks, intervals)
 APScheduler==3.10.4

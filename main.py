@@ -181,12 +181,12 @@ async def search_coin(message: types.Message, state: FSMContext):
     loading = await message.answer("🔍 Qidirilmoqda...")
     
     try:
-        data = get_real_prices([coin])
+        data = await get_real_prices([coin])
         if not data or data[0] is None:
             await loading.delete()
             # O'xshash coinlarni taklif qilish
             try:
-                suggs = suggest_coins(coin, limit=5)
+                suggs = await suggest_coins(coin, limit=5)
             except Exception:
                 suggs = []
             if suggs:

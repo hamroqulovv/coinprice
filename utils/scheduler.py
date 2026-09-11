@@ -81,7 +81,7 @@ async def send_price_updates():
             # (crypto.py dagi 15s per-coin cache ikkinchi himoya qatlami).
             distinct_coins = list(dict.fromkeys(c for _, _, cl in due_users for c in cl))
             try:
-                fetched = get_real_prices(distinct_coins)
+                fetched = await get_real_prices(distinct_coins)
             except Exception as e:
                 logger.error(f"Scheduler batch price fetch error: {e}")
                 continue

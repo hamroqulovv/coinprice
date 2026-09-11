@@ -1,8 +1,10 @@
-import requests
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from statistics import median
 import os
+
+import aiohttp
 
 
 logger = logging.getLogger(__name__)
@@ -39,12 +41,84 @@ _rate_cache = {
     "uzs": {"rate": 11800.0, "updated": None, "source": "default"},
     "rub": {"rate": 84.5, "updated": None, "source": "default"},
 }
-_crypto_cache = {}  # coin -> {"price": float, "sources": str, "updated": datetime}
+_crypto_cache = {}  # coin -> {"price": float, "sources": str, "updated": datetime, "name": str|None}
 _gecko_search_cache = {}  # SYMBOL -> {"id": str, "name": str, "updated": datetime}
 
 FIAT_TTL = timedelta(minutes=10)
 CRYPTO_TTL = timedelta(seconds=15)
 GECKO_SEARCH_TTL = timedelta(hours=24)
+
+# Coin-level concurrency cap (respects free-tier rate limits)
+_COIN_SEMAPHORE = asyncio.Semaphore(5)
+
+# Shared aiohttp session (one per event loop)
+_SESSION = None
+
+
+async def _session():
+    """Lazy shared ClientSession, recreated if closed or on a new loop."""
+    global _SESSION
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if (
+        _SESSION is None
+        or _SESSION.closed
+        or getattr(_SESSION, "_loop", None) is not loop
+    ):
+        if _SESSION is not None and not _SESSION.closed:
+            try:
+                await _SESSION.close()
+            except Exception:
+                pass
+        _SESSION = aiohttp.ClientSession(
+            headers=HEADERS,
+            timeout=aiohttp.ClientTimeout(total=10),
+            connector=aiohttp.TCPConnector(limit=20),
+        )
+    return _SESSION
+
+
+async def close_http_session():
+    """Close the shared session (shutdown / tests)."""
+    global _SESSION
+    if _SESSION is not None and not _SESSION.closed:
+        try:
+            await _SESSION.close()
+        except Exception:
+            pass
+    _SESSION = None
+
+
+async def _fetch(url, params=None, extra_headers=None):
+    """GET JSON via shared session. Returns (status, json_or_None).
+
+    Non-200 responses return (status, None). 429 is retried once after 2s.
+    """
+    session = await _session()
+    try:
+        async with session.get(url, params=params, headers=extra_headers) as r:
+            status = r.status
+            if status == 429:
+                await asyncio.sleep(2)
+                async with session.get(url, params=params, headers=extra_headers) as r2:
+                    status = r2.status
+                    if status != 200:
+                        return status, None
+                    try:
+                        return status, await r2.json()
+                    except Exception:
+                        return status, None
+            if status != 200:
+                return status, None
+            try:
+                return status, await r.json()
+            except Exception:
+                return status, None
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        logger.debug(f"HTTP error {url}: {e}")
+        return None, None
 
 
 def _get_env(name):
@@ -65,34 +139,25 @@ def _is_sane_usd(price):
         return False
 
 
-def get_real_prices(coins):
+async def get_real_prices(coins):
     """
     Kripto narxlarini olish - bir nechta manbadan MEDIANA.
     Single-source ishonchsiz: bitta API glitch/stale qaytarsa ham median
     uni rad etadi. UZS/RUB har doim USD * rasmiy kursdan hisoblanadi
     (Coinbase RUB spot kabi aralash FX ishlatilmaydi - consistency uchun).
+    Mustaqil coinlar parallel fetch qilinadi (semaphore bilan).
     """
-    results = []
-
-    # Real valyuta kurslarini yangilash (10 min cache + fallback chain)
-    usd_to_uzs = get_uzs_rate()
-    usd_to_rub = get_rub_rate()
+    # Real valyuta kurslarini parallel yangilash (10 min cache + fallback chain)
+    usd_to_uzs, usd_to_rub = await asyncio.gather(get_uzs_rate(), get_rub_rate())
 
     logger.info(f"📊 Kurslar: 1 USD = {usd_to_uzs} UZS, {usd_to_rub} RUB")
 
-    for idx, coin in enumerate(coins):
+    async def _one(coin):
         coin = coin.upper().strip().lstrip("$")
         if not coin:
-            results.append(None)
-            continue
-
-        # Rate-limit himoyasi: coinlar orasida qisqa pauza (birinchi coindan tashqari)
-        if idx > 0:
-            import time as _t
-            _t.sleep(0.4)
-
-        price_usd, sources = get_usd_median(coin)
-
+            return None
+        async with _COIN_SEMAPHORE:
+            price_usd, sources = await get_usd_median(coin)
         if price_usd and price_usd > 0:
             # Full precision saqlaymiz - rounding faqat display da (format_price)
             price_uzs = price_usd * usd_to_uzs
@@ -100,7 +165,8 @@ def get_real_prices(coins):
 
             usd_precision = 8 if price_usd < 0.01 else 4
 
-            results.append({
+            logger.info(f"✅ {coin}: ${price_usd:.8f} ({sources})")
+            return {
                 "usd": price_usd,  # Raw qiymat (median)
                 "usd_formatted": f"{price_usd:.{usd_precision}f}",
                 "uzs": price_uzs,
@@ -109,16 +175,14 @@ def get_real_prices(coins):
                 "uzs_rate": usd_to_uzs,
                 "rub_rate": usd_to_rub,
                 "name": get_coin_display_name(coin),
-            })
-            logger.info(f"✅ {coin}: ${price_usd:.8f} ({sources})")
-        else:
-            logger.error(f"❌ {coin}: topilmadi")
-            results.append(None)
+            }
+        logger.error(f"❌ {coin}: topilmadi")
+        return None
 
-    return results
+    return list(await asyncio.gather(*(_one(c) for c in coins)))
 
 
-def get_usd_median(coin):
+async def get_usd_median(coin):
     """Barcha manbalardan narx yig'ib medianani qaytaradi. Returns (price, sources_str)."""
     # Short crypto cache - same tick consistency + rate-limit protection
     now = datetime.now()
@@ -126,10 +190,7 @@ def get_usd_median(coin):
     if cached and cached.get("updated") and (now - cached["updated"]) < CRYPTO_TTL:
         return cached["price"], cached["sources"]
 
-    candidates = []  # list of (price, source_name)
-    display_name = None
-
-    for fn, name in (
+    fetchers = (
         (get_from_binance, "Binance"),
         (get_from_bybit, "Bybit"),
         (get_from_coinbase, "Coinbase"),
@@ -137,11 +198,22 @@ def get_usd_median(coin):
         (get_from_coingecko_search, "GeckoSearch"),
         (get_from_dexscreener, "DexScreener"),
         (get_from_coinmarketcap, "CoinMarketCap"),
-    ):
+    )
+
+    # Mustaqil manbalar parallel so'raladi
+    results = await asyncio.gather(
+        *(fn(coin) for fn, _ in fetchers), return_exceptions=True
+    )
+
+    candidates = []  # list of (price, source_name)
+    display_name = None
+    for (fn, name), res in zip(fetchers, results):
+        if isinstance(res, Exception):
+            logger.debug(f"{name} median collect error for {coin}: {res}")
+            continue
         try:
-            raw, _ = fn(coin)
-            # Normalize: Coinbase dict {"usd":..} vs others float
-            # DexScreener/GeckoSearch dict {"usd":.., "name":..} ham bo'lishi mumkin
+            raw, _ = res
+            # Normalize: dict {"usd":.., "name":..} vs float
             if isinstance(raw, dict):
                 price = raw.get("usd")
                 if not display_name and raw.get("name"):
@@ -150,10 +222,6 @@ def get_usd_median(coin):
                 price = raw
             if price and _is_sane_usd(price):
                 candidates.append((float(price), name))
-                # Bitta manba topilsa ham davom etamiz (median uchun),
-                # lekin 4+ manba yig'ilsa tezlik uchun to'xtash mumkin
-                if len(candidates) >= 5:
-                    break
         except Exception as e:
             logger.debug(f"{name} median collect error for {coin}: {e}")
 
@@ -191,7 +259,7 @@ def get_coin_display_name(coin):
     return c.get("name")
 
 
-def get_from_coinbase(coin):
+async def get_from_coinbase(coin):
     """
     Coinbase Spot Price API - USD only.
     NOTE: RUB Coinbase spot ATAYLAB ishlatilmaydi - u Coinbase o'z FX kursi
@@ -201,12 +269,9 @@ def get_from_coinbase(coin):
     """
     try:
         base = _get_env("COINBASE_BASE_URL")
-        url_usd = f"{base}/{coin}-USD/spot"
-        response_usd = requests.get(url_usd, headers=HEADERS, timeout=8)
+        status, data_usd = await _fetch(f"{base}/{coin}-USD/spot")
 
-        if response_usd.status_code == 200:
-            data_usd = response_usd.json()
-
+        if status == 200 and data_usd:
             if "data" in data_usd and "amount" in data_usd["data"]:
                 price_usd = float(data_usd["data"]["amount"])
 
@@ -219,7 +284,7 @@ def get_from_coinbase(coin):
     return None, None
 
 
-def get_from_coinmarketcap(coin):
+async def get_from_coinmarketcap(coin):
     """
     CoinMarketCap API - aggregated VWAP, eng aniq "bozor" narxi.
     API kalit talab qiladi; kalit bo'lmasa skip.
@@ -306,13 +371,11 @@ def get_from_coinmarketcap(coin):
 
         logger.debug(f"CoinMarketCap: Requesting price for {coin} (symbol: {symbol})")
 
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        status, data = await _fetch(url, params=params, extra_headers=headers)
 
-        if response.status_code == 200:
-            data = response.json()
-
+        if status == 200 and data:
             # Debug uchun ma'lumot
-            logger.debug(f"CoinMarketCap response status: {response.status_code}")
+            logger.debug(f"CoinMarketCap response status: {status}")
 
             # Check if data exists
             if 'data' in data and symbol in data['data']:
@@ -333,11 +396,9 @@ def get_from_coinmarketcap(coin):
             if symbol != coin:
                 logger.debug(f"CoinMarketCap: {symbol} bilan topilmadi, {coin} bilan urinib ko'ramiz")
                 params['symbol'] = coin
-                response = requests.get(url, headers=headers, params=params, timeout=8)
+                status, data = await _fetch(url, params=params, extra_headers=headers)
 
-                if response.status_code == 200:
-                    data = response.json()
-
+                if status == 200 and data:
                     if 'data' in data and coin in data['data']:
                         coin_data = data['data'][coin]
 
@@ -351,21 +412,19 @@ def get_from_coinmarketcap(coin):
                                     logger.info(f"✅ CoinMarketCap: {coin} narxi: ${price}")
                                     return float(price), "CoinMarketCap"
 
-        elif response.status_code == 400:
+        elif status == 400:
             logger.debug(f"CoinMarketCap: Symbol {symbol} not found (400 error)")
-        elif response.status_code == 401:
+        elif status == 401:
             logger.warning("CoinMarketCap: Invalid API key (401 error)")
-        elif response.status_code == 429:
+        elif status == 429:
             logger.debug("CoinMarketCap: Rate limit exceeded (429 error)")
-        elif response.status_code == 404:
+        elif status == 404:
             logger.debug(f"CoinMarketCap: {symbol} not found (404 error)")
         else:
-            logger.debug(f"CoinMarketCap: Unexpected status code {response.status_code}")
+            logger.debug(f"CoinMarketCap: Unexpected status code {status}")
 
-    except requests.exceptions.Timeout:
+    except (aiohttp.ClientError, asyncio.TimeoutError):
         logger.debug(f"CoinMarketCap timeout for {coin}")
-    except requests.exceptions.RequestException as e:
-        logger.debug(f"CoinMarketCap request error for {coin}: {e}")
     except Exception as e:
         logger.debug(f"CoinMarketCap error for {coin}: {e}")
 
@@ -382,7 +441,7 @@ BINANCE_SYMBOL_FALLBACKS = {
 }
 
 
-def get_from_binance(coin):
+async def get_from_binance(coin):
     """
     Binance Spot API - eng likvid bozor (real-time trade narxi).
     USDT juftlik ~ USD, farq 0.1% atrofida - median ichida tekislanadi.
@@ -396,16 +455,13 @@ def get_from_binance(coin):
 
         for symbol in symbols_to_try:
             try:
-                response = requests.get(
-                    url, params={"symbol": symbol}, headers=HEADERS, timeout=8
-                )
+                status, data = await _fetch(url, params={"symbol": symbol})
 
-                if response.status_code == 200:
-                    data = response.json()
+                if status == 200 and data:
                     price = float(data.get("price", 0))
                     if _is_sane_usd(price):
                         return price, "Binance"
-                elif response.status_code == 400:
+                elif status == 400:
                     continue  # invalid symbol - keyingi fallbackni urinish
             except Exception:
                 continue
@@ -416,7 +472,7 @@ def get_from_binance(coin):
     return None, None
 
 
-def get_from_bybit(coin):
+async def get_from_bybit(coin):
     """
     Bybit Spot v5 - 4-chi mustaqil manba (median tiebreaker).
     Free, no key: GET /v5/market/tickers?category=spot&symbol={COIN}USDT
@@ -428,24 +484,16 @@ def get_from_bybit(coin):
         )
         for symbol in symbols_to_try:
             try:
-                r = requests.get(
+                status, data = await _fetch(
                     "https://api.bybit.com/v5/market/tickers",
                     params={"category": "spot", "symbol": symbol},
-                    headers=HEADERS,
-                    timeout=8,
                 )
-                if r.status_code == 200:
-                    data = r.json()
+                if status == 200 and data:
                     lst = (data.get("result") or {}).get("list") or []
                     if lst:
                         price = float(lst[0].get("lastPrice", 0))
                         if _is_sane_usd(price):
                             return price, "Bybit"
-                # 429 bo'lsa 1 marta kutib retry
-                if r.status_code == 429:
-                    import time as _t
-                    _t.sleep(1.5)
-                    continue
             except Exception:
                 continue
     except Exception as e:
@@ -454,7 +502,7 @@ def get_from_bybit(coin):
     return None, None
 
 
-def get_from_coingecko(coin):
+async def get_from_coingecko(coin):
     """
     CoinGecko API - aggregated fallback manba.
     """
@@ -530,17 +578,9 @@ def get_from_coingecko(coin):
             "include_24hr_change": "false"
         }
 
-        response = requests.get(url, params=params, headers=HEADERS, timeout=8)
+        status, data = await _fetch(url, params=params)
 
-        if response.status_code == 429:
-            # Free tier rate limit - 2s kutib 1 marta retry
-            import time as _t
-            _t.sleep(2)
-            response = requests.get(url, params=params, headers=HEADERS, timeout=8)
-
-        if response.status_code == 200:
-            data = response.json()
-
+        if status == 200 and data:
             if coin_id in data and "usd" in data[coin_id]:
                 price = float(data[coin_id]["usd"])
                 if _is_sane_usd(price):
@@ -552,7 +592,7 @@ def get_from_coingecko(coin):
     return None, None
 
 
-def get_from_coingecko_search(coin):
+async def get_from_coingecko_search(coin):
     """
     CoinGecko /search API - HAR QANDAY token uchun universal resolver.
     Hardcoded COIN_IDS da bo'lmagan yangi/mem coinlar shu orqali topiladi.
@@ -573,24 +613,12 @@ def get_from_coingecko_search(coin):
         coin_name = cached.get("name")
     else:
         try:
-            r = requests.get(
+            status, data = await _fetch(
                 "https://api.coingecko.com/api/v3/search",
                 params={"query": symbol},
-                headers=HEADERS,
-                timeout=8,
             )
-            if r.status_code == 429:
-                import time as _t
-                _t.sleep(2)
-                r = requests.get(
-                    "https://api.coingecko.com/api/v3/search",
-                    params={"query": symbol},
-                    headers=HEADERS,
-                    timeout=8,
-                )
-            if r.status_code != 200:
+            if status != 200 or not data:
                 return None, None
-            data = r.json()
             coins = data.get("coins", []) or []
 
             # 1. Aniq symbol match (case-insensitive), eng yuqori market_cap_rank
@@ -616,23 +644,11 @@ def get_from_coingecko_search(coin):
     # 2. Topilgan id bo'yicha narx
     try:
         url = _get_env("COINGECKO_URL")
-        r = requests.get(
+        status, data = await _fetch(
             url,
             params={"ids": coin_id, "vs_currencies": "usd"},
-            headers=HEADERS,
-            timeout=8,
         )
-        if r.status_code == 429:
-            import time as _t
-            _t.sleep(2)
-            r = requests.get(
-                url,
-                params={"ids": coin_id, "vs_currencies": "usd"},
-                headers=HEADERS,
-                timeout=8,
-            )
-        if r.status_code == 200:
-            data = r.json()
+        if status == 200 and data:
             if coin_id in data and "usd" in data[coin_id]:
                 price = float(data[coin_id]["usd"])
                 if _is_sane_usd(price):
@@ -643,22 +659,20 @@ def get_from_coingecko_search(coin):
     return None, None
 
 
-def suggest_coins(query, limit=5):
+async def suggest_coins(query, limit=5):
     """Gecko search orqali o'xshash coinlar ro'yxati (topilmaganda taklif uchun)."""
     try:
         q = (query or "").upper().strip().lstrip("$")
         if not q:
             return []
-        r = requests.get(
+        status, data = await _fetch(
             "https://api.coingecko.com/api/v3/search",
             params={"query": q},
-            headers=HEADERS,
-            timeout=8,
         )
-        if r.status_code != 200:
+        if status != 200 or not data:
             return []
         out = []
-        for c in (r.json().get("coins", []) or [])[:limit]:
+        for c in (data.get("coins", []) or [])[:limit]:
             sym = str(c.get("symbol", "")).upper()
             name = c.get("name", "")
             if sym:
@@ -669,7 +683,7 @@ def suggest_coins(query, limit=5):
         return []
 
 
-def get_from_dexscreener(coin):
+async def get_from_dexscreener(coin):
     """
     DexScreener search API - DEX dagi HAR QANDAY token (memecoinlar ham).
     Free, key shart emas: GET /latest/dex/search?q={symbol}
@@ -680,15 +694,13 @@ def get_from_dexscreener(coin):
     if not symbol:
         return None, None
     try:
-        r = requests.get(
-            f"https://api.dexscreener.com/latest/dex/search",
+        status, data = await _fetch(
+            "https://api.dexscreener.com/latest/dex/search",
             params={"q": symbol},
-            headers=HEADERS,
-            timeout=8,
         )
-        if r.status_code != 200:
+        if status != 200 or not data:
             return None, None
-        pairs = (r.json().get("pairs", []) or [])
+        pairs = (data.get("pairs", []) or [])
         if not pairs:
             return None, None
 
@@ -721,13 +733,11 @@ def get_from_dexscreener(coin):
     return None, None
 
 
-def _fetch_er_rate(ccy):
+async def _fetch_er_rate(ccy):
     """Secondary fiat source: open.er-api.com (free, no key). Returns rate or None."""
     try:
-        url = DEFAULTS["ER_API_URL"]
-        r = requests.get(url, headers=HEADERS, timeout=8)
-        if r.status_code == 200:
-            data = r.json()
+        _, data = await _fetch(DEFAULTS["ER_API_URL"])
+        if data:
             rates = data.get("rates", {})
             rate = rates.get(ccy)
             if rate:
@@ -738,7 +748,7 @@ def _fetch_er_rate(ccy):
     return None
 
 
-def get_uzs_rate():
+async def get_uzs_rate():
     """
     USD → UZS (O'zbekiston Markaziy Banki, rasmiy).
     Chain: CBU primary -> ER-API secondary -> stale cache -> default.
@@ -756,10 +766,9 @@ def get_uzs_rate():
     # 1. CBU primary
     try:
         url = _get_env("UZS_RATE_URL")
-        response = requests.get(url, headers=HEADERS, timeout=8)
+        status, data = await _fetch(url)
 
-        if response.status_code == 200:
-            data = response.json()
+        if status == 200 and data:
             # CBU list qaytaradi: [{"Ccy": "USD", "Rate": "11783.47", ...}]
             items = data if isinstance(data, list) else data.get("rates", [])
             for currency in items:
@@ -774,7 +783,7 @@ def get_uzs_rate():
         logger.warning(f"UZS CBU xato: {e}")
 
     # 2. ER-API secondary
-    er = _fetch_er_rate("UZS")
+    er = await _fetch_er_rate("UZS")
     if er and 1000 < er < 100000:
         _rate_cache["uzs"] = {"rate": er, "updated": now, "source": "ER-API"}
         logger.info(f"✅ UZS kurs yangilandi (ER-API fallback): {er}")
@@ -786,7 +795,7 @@ def get_uzs_rate():
     return cache["rate"]
 
 
-def get_rub_rate():
+async def get_rub_rate():
     """
     USD → RUB (Rossiya Markaziy Banki, rasmiy).
     Chain: CBR primary -> ER-API secondary -> stale cache -> default.
@@ -802,11 +811,9 @@ def get_rub_rate():
     # 1. CBR primary
     try:
         url = _get_env("RUB_RATE_URL")
-        response = requests.get(url, headers=HEADERS, timeout=8)
+        status, data = await _fetch(url)
 
-        if response.status_code == 200:
-            data = response.json()
-
+        if status == 200 and data:
             if "Valute" in data and "USD" in data["Valute"]:
                 rate = float(data["Valute"]["USD"]["Value"])
 
@@ -819,7 +826,7 @@ def get_rub_rate():
         logger.warning(f"RUB CBR xato: {e}")
 
     # 2. ER-API secondary
-    er = _fetch_er_rate("RUB")
+    er = await _fetch_er_rate("RUB")
     if er and 10 < er < 500:
         _rate_cache["rub"] = {"rate": er, "updated": now, "source": "ER-API"}
         logger.info(f"✅ RUB kurs yangilandi (ER-API fallback): {er}")
@@ -831,15 +838,10 @@ def get_rub_rate():
 
 
 # TEST FUNCTION
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-
-    print("="*60)
-    print("🚀 CRYPTO PRICE CHECKER - MULTI-SOURCE MEDIAN")
-    print("="*60)
+async def _demo():
+    print("=" * 60)
+    print("🚀 CRYPTO PRICE CHECKER - MULTI-SOURCE MEDIAN (async)")
+    print("=" * 60)
 
     # Check if CoinMarketCap API key is available
     cmc_api_key = _get_env('COINMARKETCAP_API_KEY')
@@ -852,15 +854,15 @@ if __name__ == "__main__":
     test_coins = ["BTC", "ETH", "SOL", "TON", "DOGE", "NOT", "SHIB"]
 
     print(f"\n🔍 Testing {len(test_coins)} coins...\n")
-    print("USD = median(Binance, Coinbase, CoinGecko[, CMC])")
+    print("USD = median(Binance, Bybit, Coinbase, CoinGecko[, CMC])")
     print("UZS = USD * CBU | RUB = USD * CBR")
     print()
 
-    results = get_real_prices(test_coins)
+    results = await get_real_prices(test_coins)
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("📊 NATIJALAR:")
-    print("="*60 + "\n")
+    print("=" * 60 + "\n")
 
     for i, coin in enumerate(test_coins):
         if results[i]:
@@ -873,4 +875,13 @@ if __name__ == "__main__":
         else:
             print(f"❌ {coin}: TOPILMADI\n")
 
-    print("="*60)
+    print("=" * 60)
+    await close_http_session()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    asyncio.run(_demo())
