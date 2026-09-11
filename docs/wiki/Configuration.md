@@ -28,7 +28,7 @@ Override a default only if you mirror the API or the official URL changes.
 ## Example
 
 ```ini
-BOT_TOKEN=8811421563:AA…
-PRIMARY_ADMIN=8992814642
-ADMINS=8992814642
+BOT_TOKEN=123456:ABC-your-token-here
+PRIMARY_ADMIN=123456789
+ADMINS=123456789
 ```
