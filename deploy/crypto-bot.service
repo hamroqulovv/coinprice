@@ -1,17 +1,22 @@
 [Unit]
 Description=Crypto Bot Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
+# Replace 'ubuntu' and paths with your own user/project location.
 User=ubuntu
 WorkingDirectory=/opt/crypto-bot
 EnvironmentFile=/opt/crypto-bot/.env
-ExecStart=/usr/bin/python3 /opt/crypto-bot/main.py
-Restart=always
-RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
+Environment=PYTHONUNBUFFERED=1
+# NOTE: venv python ishlatiladi (system python'da aiogram yo'q bo'lishi mumkin).
+# Install: python3 -m venv /opt/crypto-bot/venv && /opt/crypto-bot/venv/bin/pip install -r /opt/crypto-bot/requirements.txt
+ExecStart=/opt/crypto-bot/venv/bin/python /opt/crypto-bot/main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
 SyslogIdentifier=crypto-bot
 
 [Install]

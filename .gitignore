@@ -6,9 +6,13 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Database
+# Database (WAL sidecar'lar bilan - WAL yoqilgan)
 *.sqlite3
+*.sqlite*
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 
 # Logs
 *.log
@@ -16,4 +20,4 @@ logs/
 
 # Virtual env
 venv/
-.env/
+.venv/

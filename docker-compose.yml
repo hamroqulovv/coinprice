@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   bot:
     build: .
@@ -7,6 +5,8 @@ services:
     env_file:
       - .env
     volumes:
+      # IMPORTANT: host'da ./main.db fayl bo'lishi shart (touch main.db).
+      # Bo'lmasa Docker uni directory qilib yaratadi va SQLite ochilmaydi.
       - ./main.db:/app/main.db
       - ./data:/app/data
     restart: unless-stopped
