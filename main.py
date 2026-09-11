@@ -528,6 +528,19 @@ async def back_main(message: types.Message, state: FSMContext):
 async def catch_all(message: types.Message):
     await message.answer("❓ Tushunarsiz buyruq. Iltimos, pastdagi menyudan foydalaning 👇", reply_markup=main_menu(message.from_user.id))
 
+# ==================== HEALTH ====================
+def create_health_app():
+    """Render keep-alive/monitoring uchun minimal app. Faqat GET /health."""
+    from aiohttp import web
+
+    async def health_handler(request):
+        return web.json_response({"status": "ok"})
+
+    app = web.Application()
+    app.router.add_get("/health", health_handler)
+    return app
+
+
 # ==================== MAIN ====================
 async def main():
     try:
@@ -543,12 +556,7 @@ async def main():
 
     # Health endpoint (Render keep-alive ping + monitoring uchun).
     # Polling bot HTTP eshitmasa Render uni "idle" deb uxlatadi.
-    from aiohttp import web
-
-    async def health_handler(request):
-        return web.json_response({"status": "ok"})
-
-    health_runner = web.AppRunner(web.Application())
+    health_runner = web.AppRunner(create_health_app())
     await health_runner.setup()
     health_site = web.TCPSite(
         health_runner, "0.0.0.0", int(os.getenv("PORT", "10000")))
