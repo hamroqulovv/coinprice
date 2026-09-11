@@ -42,11 +42,15 @@ _rate_cache = {
     "rub": {"rate": 84.5, "updated": None, "source": "default"},
 }
 _crypto_cache = {}  # coin -> {"price": float, "sources": str, "updated": datetime, "name": str|None}
-_gecko_search_cache = {}  # SYMBOL -> {"id": str, "name": str, "updated": datetime}
+# Gecko id cache: {"id": str|None, "name": str|None, "updated": datetime, "confirmed": bool}
+# - success (id set): permanent, mapping deyarli o'zgarmaydi
+# - confirmed not-found (200 + zero match): 1 soat (transient xatolar cache'lanmaydi)
+_gecko_search_cache = {}  # SYMBOL -> entry
 
 FIAT_TTL = timedelta(minutes=10)
 CRYPTO_TTL = timedelta(seconds=15)
 GECKO_SEARCH_TTL = timedelta(hours=24)
+GECKO_NEG_TTL = timedelta(hours=1)
 
 # Coin-level concurrency cap (respects free-tier rate limits)
 _COIN_SEMAPHORE = asyncio.Semaphore(5)
@@ -599,20 +603,31 @@ async def resolve_coingecko_id(symbol):
     Bir xil ticker bir nechta loyihada bo'lsa, eng kichik (non-null)
     market_cap_rank tanlanadi; rank bo'lmasa CoinGecko tartibidagi
     birinchisi olinadi. Topilmasa yoki xatoda None qaytadi (raise yo'q).
+
+    Cache: muvaffaqiyatli mapping permanent; 200 + zero-match 1 soat;
+    xato/timeout cache'lanmaydi (keyingi safar qayta uriniladi).
     """
     try:
         sym = (symbol or "").upper().strip().lstrip("$")
         if not sym:
             return None
+        now = datetime.now()
+        cached = _gecko_search_cache.get(sym)
+        if cached:
+            if cached.get("id"):
+                return cached["id"]
+            if cached.get("confirmed") and (now - cached["updated"]) < GECKO_NEG_TTL:
+                return None
         status, data = await _fetch(
             "https://api.coingecko.com/api/v3/search",
             params={"query": sym},
         )
         if status != 200 or not data:
-            return None
+            return None  # transient - cache'lanmaydi
         coins = data.get("coins", []) or []
         exact = [c for c in coins if str(c.get("symbol", "")).upper() == sym]
         if not exact:
+            _gecko_search_cache[sym] = {"id": None, "name": None, "updated": now, "confirmed": True}
             return None
 
         def _rank(c):
@@ -620,7 +635,16 @@ async def resolve_coingecko_id(symbol):
             return mr if isinstance(mr, int) and mr > 0 else 10_000_000
 
         best = sorted(exact, key=_rank)[0]
-        return best.get("id") or None
+        coin_id = best.get("id") or None
+        if not coin_id:
+            return None  # malformed - cache'lanmaydi
+        _gecko_search_cache[sym] = {
+            "id": coin_id,
+            "name": best.get("name") or best.get("symbol"),
+            "updated": now,
+            "confirmed": True,
+        }
+        return coin_id
     except Exception as e:
         logger.debug(f"resolve_coingecko_id error for {symbol}: {e}")
         return None
@@ -642,10 +666,13 @@ async def get_from_coingecko_search(coin):
     coin_id = None
     coin_name = None
 
-    if cached and cached.get("updated") and (now - cached["updated"]) < GECKO_SEARCH_TTL:
-        coin_id = cached["id"]
-        coin_name = cached.get("name")
-    else:
+    if cached and cached.get("updated"):
+        if cached.get("id") and (now - cached["updated"]) < GECKO_SEARCH_TTL:
+            coin_id = cached["id"]
+            coin_name = cached.get("name")
+        elif not cached.get("id") and cached.get("confirmed") and (now - cached["updated"]) < GECKO_NEG_TTL:
+            return None, None  # confirmed not-found, hali fresh
+    if coin_id is None:
         try:
             status, data = await _fetch(
                 "https://api.coingecko.com/api/v3/search",
@@ -670,7 +697,7 @@ async def get_from_coingecko_search(coin):
             coin_name = best.get("name") or best.get("symbol")
             if not coin_id:
                 return None, None
-            _gecko_search_cache[symbol] = {"id": coin_id, "name": coin_name, "updated": now}
+            _gecko_search_cache[symbol] = {"id": coin_id, "name": coin_name, "updated": now, "confirmed": True}
         except Exception as e:
             logger.debug(f"GeckoSearch error for {coin}: {e}")
             return None, None
