@@ -124,23 +124,42 @@ async def send_price_updates():
                             
                             for line in message_lines:
                                 p = line['price']
-                                
-                                # Juda kichik narxlarni to'g'ri ko'rsatish
-                                if p['usd'] < 0.01:
-                                    usd_str = f"${p['usd']:.8f}"
-                                elif p['usd'] < 1:
-                                    usd_str = f"${p['usd']:.6f}"
-                                else:
+
+                                # main.py format_price() bilan bir xil mantik -
+                                # display consistency uchun (accuracy yo'qolmasligi uchun)
+                                if p['usd'] >= 1:
+                                    usd_str = f"${p['usd']:,.2f}"
+                                elif p['usd'] >= 0.01:
                                     usd_str = f"${p['usd']:,.4f}"
-                                
-                                message_text += f"{line['emoji']} <b>{line['coin']}</b>\n"
+                                elif p['usd'] >= 0.0001:
+                                    usd_str = f"${p['usd']:,.6f}"
+                                else:
+                                    usd_str = f"${p['usd']:.8f}"
+
+                                if p['rub'] >= 1:
+                                    rub_str = f"{p['rub']:,.2f} ₽"
+                                elif p['rub'] >= 0.01:
+                                    rub_str = f"{p['rub']:,.4f} ₽"
+                                else:
+                                    rub_str = f"{p['rub']:.6f} ₽"
+
+                                if p['uzs'] >= 1000:
+                                    uzs_str = f"{int(round(p['uzs'])):,} so'm"
+                                elif p['uzs'] >= 1:
+                                    uzs_str = f"{p['uzs']:,.2f} so'm"
+                                else:
+                                    uzs_str = f"{p['uzs']:.4f} so'm"
+
+                                nm = p.get('name')
+                                title = f"{line['emoji']} <b>{line['coin']}</b>" + (f" ({nm})" if nm and nm.upper() != line['coin'] else "")
+                                message_text += title + "\n"
                                 message_text += f"   💵 {usd_str}\n"
-                                
+
                                 if line['change'] is not None:
                                     message_text += f"   📊 {line['sign']}{line['change']:.2f}%\n"
-                                
-                                message_text += f"   🇺🇿 {p['uzs']:,.2f} so'm\n"
-                                message_text += f"   🇷🇺 {p['rub']:,.4f} ₽\n\n"
+
+                                message_text += f"   🇺🇿 {uzs_str}\n"
+                                message_text += f"   🇷🇺 {rub_str}\n\n"
                             
                             message_text += f"🕒 <i>Keyingi tekshirish: {interval_sec}s</i>"
                             
