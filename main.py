@@ -200,7 +200,7 @@ async def search_coin(message: types.Message, state: FSMContext):
                     + "\n\nBelgisini aniq yozib qayta urining.",
                     parse_mode="HTML",
                 )
-            return await message.answer(f"❌  Bu turdagi coin mavjud emas. Iltimos to'g'ri kiriting.", parse_mode="HTML")
+            return await message.answer(f"❌ Bu turdagi coin mavjud emas. Iltimos to'g'ri kiriting.", parse_mode="HTML")
 
         d = data[0]
         usd_str = format_price(d.get('usd', 0), 'USD')
@@ -389,7 +389,7 @@ async def update_interval(message: types.Message, state: FSMContext):
 # ==================== PREMIUM ====================
 @dp.callback_query(F.data == "buy_premium")
 async def premium_plans(callback: types.CallbackQuery):
-    text = "💎 <b>Premium</b>\n❗️❗️❗️\nPastdagi carta raqamga korsatilga tarifdagi miqdorni tashlab screenshotni botga tashlang \n❗️Screenshotda carta-raqam , Ism-Familaya aniq korinishi kerak\nCarta raqam💳  <code>9860350142320406</code>\nCarta Egasini Ism,Familiyasi  <code>Ismoilova.F.</code>"
+    text = "💎 <b>Premium</b>\n❗️❗️❗️\nPastdagi karta raqamga ko'rsatilgan tarifdagi miqdorni tashlab screenshotni botga tashlang\n❗️Screenshotda karta-raqam, Ism-Familiya aniq ko'rinishi kerak\nKarta raqam💳  <code>9860350142320406</code>\nKarta Egasining Ism, Familiyasi  <code>Ismoilova.F.</code>"
     plans = [("⭐ 1 oy - 5 000", "30"), ("🌙 2 oy - 10 000", "60"), ("🎁 3 oy - 15 000", "90"), 
              ("☀️ 6 oy - 20 000", "180"), ("💎 1 yil - 40 000", "365")]
     kb = InlineKeyboardBuilder()
@@ -496,7 +496,7 @@ async def handle_payment(message: types.Message, state: FSMContext):
         await message.answer("✅ Yuborildi! Admin tomonidan tasdiqlanishini kuting.", reply_markup=main_menu(message.from_user.id))
     except Exception as e:
         logger.error(f"Error sending payment to admin: {e}")
-        await message.answer("❌ Xatolik ", reply_markup=main_menu(message.from_user.id))
+        await message.answer("❌ Xatolik", reply_markup=main_menu(message.from_user.id))
     await state.clear()
 
 # ==================== ADMIN ====================
