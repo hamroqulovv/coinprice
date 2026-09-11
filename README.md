@@ -46,7 +46,7 @@
 
 ## 💱 How prices work
 
-1. **Multiple sources, one honest price.** Each coin is fetched in parallel from **Binance → Bybit → Coinbase → CoinGecko → DexScreener** (+ CoinMarketCap if you add a key). The **median** wins and outliers are dropped automatically — so one glitching exchange can't show you a wrong price.
+1. **Multiple sources, one honest price.** Each coin is fetched in parallel from **Binance, Bybit, Coinbase, CoinGecko, DexScreener** (+ CoinMarketCap if you add a key). Aggregated venues (CoinGecko/Coinbase/CMC) outrank single-exchange quotes; unverified DEX listings are last-resort only. Outliers are dropped automatically — so one glitching exchange can't show you a wrong price.
 2. **Unknown tickers resolve themselves.** Popular coins use a built-in fast path; anything else is resolved live via CoinGecko search (exact symbol match, highest market-cap rank wins) and cached.
 3. **Real fiat rates.** UZS comes from Uzbekistan's Central Bank, RUB from Russia's Central Bank (each with a backup source, refreshed every 10 minutes).
 4. **Not found?** The bot suggests similar symbols — just check the exact ticker spelling.

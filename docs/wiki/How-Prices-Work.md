@@ -7,11 +7,12 @@ Each coin is fetched from **several exchanges at once** and the **median** price
 ## Source chain (per coin)
 
 ```
-Binance → Bybit → Coinbase → CoinGecko → DexScreener → (+ CoinMarketCap if you set an API key)
+Binance · Bybit · Coinbase · CoinGecko · DexScreener · (+ CoinMarketCap if you set an API key)
 ```
 
 - All reachable sources are queried **in parallel** (`asyncio.gather`).
-- The median of all good answers is the price; any source more than **3% off** the median is discarded as an outlier (this really happens — e.g. a stale TON listing).
+- **Trust tiers:** aggregated venues (CoinGecko/Coinbase/CMC) outrank single-exchange USDT quotes (a stale listing like Binance's TON pair is dropped automatically); unverified DEX listings count **only** when nothing else answers.
+- The median of the trusted set is the price; anything further than **3%** off is discarded.
 - Popular tickers (BTC, ETH, …) use a hardcoded CoinGecko-id fast path — no extra network call, no added latency.
 
 ## Unknown / small-cap tickers
