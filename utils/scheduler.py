@@ -71,7 +71,7 @@ async def send_price_updates():
             # Kuzatuvlar BITTA query'da olinadi (har user uchun alohida
             # SELECT o'rniga - N+1 muammosi bo'lmasligi uchun).
             try:
-                pref_rows = db.execute(
+                pref_rows = await db.execute(
                     "SELECT user_id, coin_symbol, last_price FROM CryptoPreferences",
                     fetchall=True,
                 ) or []
@@ -89,7 +89,7 @@ async def send_price_updates():
                     user_next_send.pop(uid, None)
 
             try:
-                users = db.execute(
+                users = await db.execute(
                     "SELECT id, interval_min FROM Users WHERE id IN (SELECT DISTINCT user_id FROM CryptoPreferences)",
                     fetchall=True,
                 ) or []
@@ -218,7 +218,7 @@ async def send_price_updates():
                         # (restart'dan omon qoladi, lock contention kamayadi)
                         if pending_saves:
                             try:
-                                db.execute_many(
+                                await db.execute_many(
                                     "UPDATE CryptoPreferences SET last_price=?, last_checked_at=? WHERE user_id=? AND coin_symbol=?",
                                     pending_saves,
                                     commit=True,

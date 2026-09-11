@@ -56,9 +56,9 @@ def main_menu(user_id):
 def back_keyboard():
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🏠 Asosiy menyu")]], resize_keyboard=True)
 
-def is_registered(user_id):
+async def is_registered(user_id):
     """Return True if the user exists in the Users table."""
-    return bool(db.execute("SELECT 1 FROM Users WHERE id=?", (user_id,), fetchone=True))
+    return bool(await db.execute("SELECT 1 FROM Users WHERE id=?", (user_id,), fetchone=True))
 
 
 def is_admin(user_id):
@@ -82,7 +82,7 @@ async def _enter_search(message: types.Message, state: FSMContext):
 @dp.message(Command("start"))
 async def start_bot(message: types.Message, state: FSMContext):
     await state.clear()
-    user = db.execute("SELECT full_name FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
+    user = await db.execute("SELECT full_name FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
 
     if not user:
         kb = [[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]]
@@ -111,7 +111,7 @@ async def get_phone(message: types.Message, state: FSMContext):
     try:
         # INSERT OR IGNORE: kontaktni ikki marta bosish race'ida
         # ikkinchi urinish ham muvaffaqiyat hisoblanadi.
-        db.execute(
+        await db.execute(
             "INSERT OR IGNORE INTO Users (id, phone, username, full_name, interval_min, is_premium, view_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (message.from_user.id, phone, username, full_name, MIN_INTERVAL, 0, 0),
             commit=True
@@ -139,9 +139,9 @@ async def get_phone_fallback(message: types.Message):
 @dp.message(F.text == "📊 Narxlarni ko'rish")
 async def show_coins_search(message: types.Message, state: FSMContext):
     await state.clear()    # Ensure user is registered before allowing coin search
-    if not is_registered(message.from_user.id):
+    if not await is_registered(message.from_user.id):
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
-    db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
+    await db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
     await _enter_search(message, state)
 
 @dp.message(CoinSearch.waiting_for_symbol, F.text, ~F.text.in_(MENU_BUTTONS))
@@ -151,7 +151,7 @@ async def search_coin(message: types.Message, state: FSMContext):
         return await message.answer("Asosiy menyu", reply_markup=main_menu(message.from_user.id))
     
     # Extra safety: prevent unregistered users from performing searches
-    if not is_registered(message.from_user.id):
+    if not await is_registered(message.from_user.id):
         await state.clear()
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
 
@@ -198,7 +198,7 @@ async def search_coin(message: types.Message, state: FSMContext):
         if src and '+' not in src:
             text += f"\n\n🔎 Manba: {src} (kam likvid - narx taxminiy)"
 
-        exists = db.execute("SELECT 1 FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?", 
+        exists = await db.execute("SELECT 1 FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?", 
                            (message.from_user.id, coin), fetchone=True)
         
         kb = InlineKeyboardBuilder()
@@ -217,13 +217,13 @@ async def search_coin(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("notify_"))
 async def add_watchlist(callback: types.CallbackQuery):
     # Prevent unregistered users from adding coins to watchlist
-    if not is_registered(callback.from_user.id):
+    if not await is_registered(callback.from_user.id):
         await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
         return
 
     coin = callback.data.split("_", 1)[1]
     try:
-        exists = db.execute(
+        exists = await db.execute(
             "SELECT 1 FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
             (callback.from_user.id, coin), fetchone=True)
         if exists:
@@ -231,7 +231,7 @@ async def add_watchlist(callback: types.CallbackQuery):
             return
         # INSERT OR IGNORE: ikki marta tez bosilgandagi race'dan himoya
         # (DB'dagi UNIQUE(user_id, coin_symbol) duplicate yozuvni bloklaydi)
-        db.execute("INSERT OR IGNORE INTO CryptoPreferences (user_id, coin_symbol) VALUES (?, ?)",
+        await db.execute("INSERT OR IGNORE INTO CryptoPreferences (user_id, coin_symbol) VALUES (?, ?)",
                   (callback.from_user.id, coin), commit=True)
         await callback.answer(f"✅ {coin} qo'shildi!", show_alert=True)
         kb = InlineKeyboardBuilder()
@@ -257,12 +257,12 @@ async def already_watching(callback: types.CallbackQuery):
 @dp.message(F.text == "🔔 Avto-xabardorlik")
 async def auto_notify(message: types.Message):
     # Ensure the user is registered before showing auto-notify settings
-    if not is_registered(message.from_user.id):
+    if not await is_registered(message.from_user.id):
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
 
-    coins = db.execute("SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?",
+    coins = await db.execute("SELECT coin_symbol FROM CryptoPreferences WHERE user_id=?",
                       (message.from_user.id,), fetchall=True)
-    row = db.execute("SELECT interval_min FROM Users WHERE id=?",
+    row = await db.execute("SELECT interval_min FROM Users WHERE id=?",
                      (message.from_user.id,), fetchone=True)
     interval = (row[0] if row and row[0] else MIN_INTERVAL)
     
@@ -283,13 +283,13 @@ async def auto_notify(message: types.Message):
 @dp.callback_query(F.data.startswith("remove_"))
 async def remove_coin(callback: types.CallbackQuery):
     # Prevent unregistered users from removing coins
-    if not is_registered(callback.from_user.id):
+    if not await is_registered(callback.from_user.id):
         await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
         return
 
     coin = callback.data.split("_", 1)[1]
     try:
-        db.execute("DELETE FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
+        await db.execute("DELETE FROM CryptoPreferences WHERE user_id=? AND coin_symbol=?",
                   (callback.from_user.id, coin), commit=True)
         await callback.answer(f"✅ {coin} o'chirildi!")
     except sqlite3.Error as e:
@@ -305,7 +305,7 @@ async def remove_coin(callback: types.CallbackQuery):
 # ==================== PROFILE ====================
 @dp.message(F.text == "👤 Profile")
 async def profile(message: types.Message):
-    u = db.execute("SELECT full_name, phone, interval_min, view_count FROM Users WHERE id=?",
+    u = await db.execute("SELECT full_name, phone, interval_min, view_count FROM Users WHERE id=?",
                   (message.from_user.id,), fetchone=True)
 
     if not u:
@@ -335,7 +335,7 @@ async def profile(message: types.Message):
 
 @dp.callback_query(F.data == "edit_name")
 async def edit_name(callback: types.CallbackQuery, state: FSMContext):
-    if not is_registered(callback.from_user.id):
+    if not await is_registered(callback.from_user.id):
         await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
         return
     if not callback.message:
@@ -355,13 +355,13 @@ async def update_name(message: types.Message, state: FSMContext):
     if not name:
         return await message.answer("❌ Bo'sh ism bo'lmaydi!")
 
-    db.execute("UPDATE Users SET full_name=? WHERE id=?", (name, message.from_user.id), commit=True)
+    await db.execute("UPDATE Users SET full_name=? WHERE id=?", (name, message.from_user.id), commit=True)
     await message.answer("✅ Yangilandi!", reply_markup=main_menu(message.from_user.id))
     await state.clear()
 
 @dp.callback_query(F.data == "edit_interval")
 async def edit_interval(callback: types.CallbackQuery, state: FSMContext):
-    if not is_registered(callback.from_user.id):
+    if not await is_registered(callback.from_user.id):
         await callback.answer("Iltimos /start bilan ro'yxatdan o'ting.", show_alert=True)
         return
     if not callback.message:
@@ -386,19 +386,19 @@ async def update_interval(message: types.Message, state: FSMContext):
     if not MIN_INTERVAL <= val <= 86400:
         return await message.answer(f"⚠️ Interval {MIN_INTERVAL}s dan 86400s gacha bo'lishi kerak!")
 
-    db.execute("UPDATE Users SET interval_min=? WHERE id=?", (val, message.from_user.id), commit=True)
+    await db.execute("UPDATE Users SET interval_min=? WHERE id=?", (val, message.from_user.id), commit=True)
     await message.answer(f"✅ Interval yangilandi: <b>{val}s</b>", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
     await state.clear()
 
 # ==================== ADMIN ====================
 ADMIN_PAGE_SIZE = 10
 
-def _admin_page_keyboard(page: int):
+async def _admin_page_keyboard(page: int):
     """Bitta admin sahifasi uchun user tugmalari + Prev/Next navigatsiya."""
-    total = db.execute("SELECT COUNT(*) FROM Users", fetchone=True)[0] or 0
+    total = await db.execute("SELECT COUNT(*) FROM Users", fetchone=True)[0] or 0
     pages = max(1, (total + ADMIN_PAGE_SIZE - 1) // ADMIN_PAGE_SIZE)
     page = max(0, min(page, pages - 1))
-    users = db.execute(
+    users = await db.execute(
         "SELECT id, full_name, view_count FROM Users ORDER BY id LIMIT ? OFFSET ?",
         (ADMIN_PAGE_SIZE, page * ADMIN_PAGE_SIZE), fetchall=True)
     kb = InlineKeyboardBuilder()
@@ -420,7 +420,7 @@ async def admin_panel(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
-    markup, total, page, pages = _admin_page_keyboard(0)
+    markup, total, page, pages = await _admin_page_keyboard(0)
     await message.answer(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
 
 @dp.callback_query(F.data.startswith("admin_users_"))
@@ -432,7 +432,7 @@ async def admin_panel_page(callback: types.CallbackQuery):
         page = int(callback.data.split("_")[-1])
     except (ValueError, IndexError):
         page = 0
-    markup, total, page, pages = _admin_page_keyboard(page)
+    markup, total, page, pages = await _admin_page_keyboard(page)
     try:
         await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
     except TelegramBadRequest as e:
@@ -452,7 +452,7 @@ async def manage_user(callback: types.CallbackQuery):
         await callback.answer("❌ Invalid callback data", show_alert=True)
         return
     # Select explicit columns to avoid confusion if DB schema changes
-    u = db.execute(
+    u = await db.execute(
         "SELECT id, full_name, phone, username, interval_min, view_count FROM Users WHERE id=?",
         (uid,), fetchone=True
     )
@@ -491,7 +491,7 @@ async def back_admin(callback: types.CallbackQuery):
         return
     # Ro'yxatning birinchi sahifasiga qaytish (o'chirish o'rniga -
     # paginatsiya yo'qolmaydi, ikkinchi bosish crash qilmaydi)
-    markup, total, page, pages = _admin_page_keyboard(0)
+    markup, total, page, pages = await _admin_page_keyboard(0)
     try:
         await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
     except TelegramBadRequest as e:
@@ -511,7 +511,7 @@ async def support(message: types.Message):
         "• Bildirishnoma kelmasa — 🔔 Avto-xabardorlik bo'limini tekshiring\n"
         "• Bot ishlamasa — /start ni qayta yuboring"
     )
-    if is_registered(message.from_user.id):
+    if await is_registered(message.from_user.id):
         await message.answer(text, parse_mode="HTML", reply_markup=main_menu(message.from_user.id))
     else:
         await message.answer(text, parse_mode="HTML")
@@ -530,7 +530,8 @@ async def catch_all(message: types.Message):
 # ==================== MAIN ====================
 async def main():
     try:
-        db.create_tables()
+        await db.connect()
+        await db.create_tables()
     except Exception as e:
         logger.error(f"Database init failed: {e}")
         raise SystemExit(1)
