@@ -200,7 +200,7 @@ async def search_coin(message: types.Message, state: FSMContext):
                     + "\n\nBelgisini aniq yozib qayta urining.",
                     parse_mode="HTML",
                 )
-            return await message.answer(f"❌ Bu turdagi coin mavjud emas. Iltimos to'g'ri kiriting.", parse_mode="HTML")
+            return await message.answer(f"❌ Bu belgi topilmadi. Imloni tekshiring yoki coingecko.com dan aniq tickerni ko'rib qayta urining.", parse_mode="HTML")
 
         d = data[0]
         usd_str = format_price(d.get('usd', 0), 'USD')
