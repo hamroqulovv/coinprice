@@ -150,7 +150,6 @@ async def show_coins_search(message: types.Message, state: FSMContext):
     await state.clear()    # Ensure user is registered before allowing coin search
     if not await is_registered(message.from_user.id):
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
-    await db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
     await _enter_search(message, state)
 
 @dp.message(CoinSearch.waiting_for_symbol, F.text, ~F.text.in_(MENU_BUTTONS))
@@ -168,6 +167,9 @@ async def search_coin(message: types.Message, state: FSMContext):
 
     if not COIN_RE.match(coin):
         return await message.answer("❌ Noto'g'ri belgi. Masalan: <b>BTC</b>, <b>1INCH</b>, <b>PEPE</b>", parse_mode="HTML")
+
+    # Har bir haqiqiy qidiruvni hisoblash (profile'dagi So'rovlar uchun)
+    await db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
 
     loading = await message.answer("🔍 Qidirilmoqda...")
     
