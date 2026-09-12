@@ -746,13 +746,15 @@ async def catch_all(message: types.Message, state: FSMContext):
     # yetib bormaydi (CoinSearch state'i yo'q), shuning uchun shu yerda
     # aniq yo'naltiramiz - "tushunarsiz buyruq" o'rniga.
     if not await is_registered(message.from_user.id):
-        logger.info("Unregistered user %s hit catch_all, sent to /start", message.from_user.id)
-        return await message.answer(
-            "👋 <b>Assalomu alaykum!</b>\n\n"
-            "Botdan foydalanish uchun avval ro'yxatdan o'ting 👇\n"
-            "Iltimos, <b>/start</b> buyrug'ini bosing.",
-            parse_mode="HTML",
-        )
+        logger.info("Unregistered user %s hit catch_all, onboarding", message.from_user.id)
+        if message.chat.type != "private":
+            return await message.answer(
+                "👋 Botdan foydalanish uchun botni shaxsiy chatda ochib /start ni bosing."
+            )
+        # To'g'ridan-to'g'ri ro'yxatdan o'tish: "/start bosing" deb
+        # ortga qaytarish o'rniga onboarding'ni shu yerda boshlaymiz.
+        await state.clear()
+        return await start_bot(message, state)
     # Restart'dan keyin state tozalanadi (MemoryStorage) - ticker'ga o'xshash
     # matnni to'g'ridan-to'g'ri qidiruvga yo'naltiramiz.
     coin = (message.text or "").upper().strip().lstrip("$")
@@ -781,6 +783,15 @@ async def main():
     except Exception as e:
         logger.exception(f"Database init failed: {e}")
         raise SystemExit(1)
+
+    # Qaysi backend'da qancha user borligi log'da ko'rinadi: "ro'yxatdan
+    # o'tganman" degan odam topilmasa, shu yerdan qaysi DB ishlayotgani
+    # va ro'yxat shu DB'dami - tekshiriladi.
+    try:
+        _n = await db.execute("SELECT COUNT(*) FROM Users", fetchone=True)
+        logger.info("DB ready (%s): %s users", type(db).__name__, (_n[0] if _n else 0))
+    except Exception:
+        logger.exception("DB user count failed")
 
     # Avto-xabardorlik schedulerni ishga tushirish
     from utils.scheduler import start_scheduler
