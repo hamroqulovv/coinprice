@@ -14,7 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiohttp import web
 
 from loader import bot, dp, db
-from utils.api.crypto import get_real_prices, suggest_coins
+from utils.api.crypto import get_real_prices, normalize_symbol, suggest_coins
 from utils.format import format_price
 import re
 
@@ -179,7 +179,11 @@ async def search_coin(message: types.Message, state: FSMContext):
         await state.clear()
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
 
-    coin = message.text.upper().strip().lstrip("$")
+    # Normalize FIRST (trim + case-insensitive + leading $): "  usdt ",
+    # "UsDt", "$USDT" all -> "USDT", so valid USDT is never rejected.
+    # Exact ticker validated by COIN_RE; similar symbols handled downstream
+    # by suggest_coins (exact match wins, never substring).
+    coin = normalize_symbol(message.text)
 
     if not COIN_RE.match(coin):
         return await message.answer("❌ Noto'g'ri belgi. Masalan: <b>BTC</b>, <b>1INCH</b>, <b>PEPE</b>", parse_mode="HTML")
@@ -752,7 +756,8 @@ async def catch_all(message: types.Message, state: FSMContext):
         )
     # Restart'dan keyin state tozalanadi (MemoryStorage) - ticker'ga o'xshash
     # matnni to'g'ridan-to'g'ri qidiruvga yo'naltiramiz.
-    coin = (message.text or "").upper().strip().lstrip("$")
+    # Same normalization as search_coin: trim/case/$ first.
+    coin = normalize_symbol(message.text or "")
     if COIN_RE.match(coin):
         await state.set_state(CoinSearch.waiting_for_symbol)
         return await search_coin(message, state)

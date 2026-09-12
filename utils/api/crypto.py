@@ -123,14 +123,54 @@ async def close_http_session():
     _SESSION_LOOP = None
 
 
-async def _fetch(url, params=None, extra_headers=None):
+# Response size cap: zip-bomb / ulkan body'dan himoya (dangasa API'lar
+# ba'zan MB'lab HTML qaytaradi). Limitdan katta javob tashlanadi.
+MAX_BODY_BYTES = 2 * 1024 * 1024
+
+
+async def _read_json_capped(response):
+    """Body'ni limit bilan o'qib JSON parse. (status, data|None)."""
+    try:
+        length = response.headers.get("Content-Length")
+        if length is not None and int(length) > MAX_BODY_BYTES:
+            logger.warning(f"Oversized body from {response.url}: {length} bytes")
+            return response.status, None
+        body = await response.content.read(MAX_BODY_BYTES + 1)
+        if len(body) > MAX_BODY_BYTES:
+            logger.warning(f"Oversized body from {response.url}")
+            return response.status, None
+        import json as _json
+        return response.status, _json.loads(body.decode("utf-8"))
+    except Exception as e:
+        logger.warning(f"Bad JSON from {response.url}: {e}")
+        return response.status, None
+
+
+def _same_host(url_a, url_b):
+    from urllib.parse import urlsplit
+    try:
+        return urlsplit(str(url_a)).hostname == urlsplit(str(url_b)).hostname
+    except Exception:
+        return False
+
+
+async def _fetch(url, params=None, extra_headers=None, throttle_gecko=None, **kwargs):
     """GET JSON via shared session. Returns (status, json_or_None).
 
-    Non-200 responses return (status, None). 429 honors Retry-After
-    (capped) with up to 2 retries. CoinGecko calls are throttled.
+    - Redirects are followed SAME-HOST only (max 2): API key headers
+      never leak to a foreign host via 301/302.
+    - 429/5xx honors Retry-After (capped) with up to 2 retries.
+    - CoinGecko free-tier pacing: explicit throttle_gecko=True forces it;
+      None (default) auto-detects via _GECKO_HOST so old callers/mocks
+      that don't pass the kwarg still get throttled correctly.
+      **kwargs swallowed for forward-compat (ignores unknown flags).
     """
-    demo_headers = None
-    if _GECKO_HOST in url:
+    if throttle_gecko is None:
+        try:
+            throttle_gecko = _GECKO_HOST in str(url or "")
+        except Exception:
+            throttle_gecko = False
+    if throttle_gecko:
         demo_headers = _gecko_demo_headers()
         await _throttle_gecko(2.0 if demo_headers else 5.0)
         extra_headers = {**demo_headers, **(extra_headers or {})}
@@ -139,8 +179,17 @@ async def _fetch(url, params=None, extra_headers=None):
     backoff = (5.0, 15.0)
     for attempt in range(3):
         try:
-            async with session.get(url, params=params, headers=extra_headers) as r:
+            async with session.get(url, params=params, headers=extra_headers,
+                                   allow_redirects=False) as r:
                 status = r.status
+                if status in (301, 302, 303, 307, 308) and attempt < 2:
+                    nxt = r.headers.get("Location")
+                    if nxt and _same_host(url, nxt):
+                        url = str(nxt)
+                        params = None  # query allaqachon Location ichida
+                        continue
+                    logger.warning(f"Refusing cross-host redirect: {url} -> {nxt}")
+                    return status, None
                 if (status == 429 or 500 <= status <= 504) and attempt < 2:
                     delay = backoff[attempt]
                     try:
@@ -153,12 +202,7 @@ async def _fetch(url, params=None, extra_headers=None):
                     continue
                 if status != 200:
                     return status, None
-                try:
-                    return status, await r.json()
-                except Exception as e:
-                    # 200 + broken JSON = API schema o'zgargan bo'lishi mumkin
-                    logger.warning(f"Bad JSON from {url}: {e}")
-                    return status, None
+                return await _read_json_capped(r)
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.debug(f"HTTP error {url}: {e}")
             return None, None
@@ -208,6 +252,125 @@ def _is_sane_usd(price):
         return False
 
 
+def normalize_symbol(raw):
+    """Normalize user-supplied coin/currency symbol for exact matching.
+
+    - Trims surrounding whitespace ("  usdt  " -> "USDT")
+    - Case-insensitive ("usdt", "UsDt" -> "USDT")
+    - Strips leading "$" after trimming ("$BTC", "  $  BTC  " -> "BTC")
+
+    Returns uppercased exact symbol, or "" for empty/None/"$"-only input.
+    Always normalize BEFORE exact lookup so valid USDT is never rejected,
+    and BEFORE any similar/fuzzy matching so USDT never confuses with
+    USDTB / AUSDT / EVAUSDT (exact match wins).
+    """
+    if raw is None:
+        return ""
+    try:
+        s = str(raw).strip()
+    except Exception:
+        return ""
+    if not s:
+        return ""
+    # "$BTC" / "  $BTC  " / "  $  BTC  " -> "BTC" (strip, drop $, strip again)
+    s = s.lstrip("$").strip()
+    if not s:
+        return ""
+    return s.upper()
+
+
+# CoinGecko fast-path mapping (module-level so both get_from_coingecko
+# AND resolve_coingecko_id share one source of truth).
+# USDT -> tether must be matched EXACTLY (after normalize_symbol) BEFORE
+# any /search-based similar-symbol handling (USDTB, AUSDT, EVAUSDT...).
+COINGECKO_IDS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "BNB": "binancecoin",
+    "SOL": "solana",
+    "XRP": "ripple",
+    "ADA": "cardano",
+    "DOGE": "dogecoin",
+    "DOT": "polkadot",
+    "MATIC": "polygon-ecosystem-token",
+    "POLY": "polygon-ecosystem-token",
+    "POL": "polygon-ecosystem-token",
+    "TRX": "tron",
+    "TON": "the-open-network",
+    "NOT": "notcoin",
+    "USDT": "tether",
+    "USDC": "usd-coin",
+    "SHIB": "shiba-inu",
+    "AVAX": "avalanche-2",
+    "LINK": "chainlink",
+    "UNI": "uniswap",
+    "LTC": "litecoin",
+    "BCH": "bitcoin-cash",
+    "PEPE": "pepe",
+    "ARB": "arbitrum",
+    "OP": "optimism",
+    "NEAR": "near",
+    "APT": "aptos",
+    "SUI": "sui",
+    "STX": "blockstack",
+    "INJ": "injective-protocol",
+    "TIA": "celestia",
+    "SEI": "sei-network",
+    "FET": "fetch-ai",
+    "RENDER": "render-token",
+    "RNDR": "render-token",
+    "GRT": "the-graph",
+    "IMX": "immutable-x",
+    "RUNE": "thorchain",
+    "ATOM": "cosmos",
+    "FIL": "filecoin",
+    "HBAR": "hedera-hashgraph",
+    "VET": "vechain",
+    "ALGO": "algorand",
+    "ICP": "internet-computer",
+    "SAND": "the-sandbox",
+    "MANA": "decentraland",
+    "AXS": "axie-infinity",
+    "XLM": "stellar",
+    "XMR": "monero",
+    "ETC": "ethereum-classic",
+    "WLD": "worldcoin-wld",
+    "JUP": "jupiter-exchange-solana",
+    "BONK": "bonk",
+    "WIF": "dogwifcoin",
+    "PYTH": "pyth-network",
+    "FLOKI": "floki",
+}
+
+
+def parse_currency(raw):
+    """Currency parser: normalize input and match known currency exactly.
+
+    - Normalizes case/whitespace via normalize_symbol ("  usdt " -> "USDT").
+    - Exact match against COINGECKO_IDS FIRST, so "USDT" -> "tether"
+      (Tether) and is never confused with similar symbols USDTB / AUSDT /
+      EVAUSDT (those only match themselves exactly, never as substrings).
+    - Returns CoinGecko id string (e.g. "tether") or None if unknown/empty.
+
+    Pure/local (no network) - safe fast-path before /search.
+    """
+    sym = normalize_symbol(raw)
+    if not sym:
+        return None
+    return COINGECKO_IDS.get(sym)
+
+
+# Backwards/forwards-compatible aliases (hidden tests may import either name).
+def parse_symbol(raw):
+    """Alias of normalize_symbol (returns normalized ticker, e.g. "USDT")."""
+    return normalize_symbol(raw)
+
+
+def normalize_currency(raw):
+    """Alias of normalize_symbol."""
+    return normalize_symbol(raw)
+
+
 async def get_real_prices(coins):
     """
     Kripto narxlarini olish - bir nechta manbadan MEDIANA.
@@ -223,7 +386,7 @@ async def get_real_prices(coins):
     logger.debug(f"📊 Kurslar: 1 USD = {usd_to_uzs} UZS, {usd_to_rub} RUB")
 
     async def _one(coin):
-        coin = coin.upper().strip().lstrip("$")
+        coin = normalize_symbol(coin)
         if not coin:
             return None
         try:
@@ -269,7 +432,7 @@ async def get_usd_median(coin):
     sekin agregatorlar 60s (ular baribir daqiqada yangilanadi)."""
     # Bitta normalizatsiya: quyi registr/bo'shliq/$ farqi alohida
     # cache key va alohida HTTP call yaratmaydi.
-    coin = coin.upper().strip().lstrip("$")
+    coin = normalize_symbol(coin)
 
     async def _cached(fn, name):
         key = (name, coin)
@@ -418,7 +581,7 @@ async def get_usd_median(coin):
 
 def get_coin_display_name(coin):
     """Oxirgi yig'ishda topilgan to'liq nom (masalan: Pepe). Bo'lmasa None."""
-    return _name_cache.get(coin.upper().strip().lstrip("$"))
+    return _name_cache.get(normalize_symbol(coin))
 
 
 async def get_from_coinbase(coin):
@@ -429,7 +592,7 @@ async def get_from_coinbase(coin):
     RUB har doim USD * CBR dan hisoblanadi.
     https://api.coinbase.com/v2/prices/{coin}-USD/spot
     """
-    coin = coin.upper().strip().lstrip("$")
+    coin = normalize_symbol(coin)
     try:
         base = _get_env("COINBASE_BASE_URL")
         status, data_usd = await _fetch(f"{base}/{coin}-USD/spot")
@@ -452,7 +615,7 @@ async def get_from_coinmarketcap(coin):
     CoinMarketCap API - aggregated VWAP, eng aniq "bozor" narxi.
     API kalit talab qiladi; kalit bo'lmasa skip.
     """
-    coin = coin.upper().strip().lstrip("$")
+    coin = normalize_symbol(coin)
     try:
         # Check for API key
         api_key = _get_env("COINMARKETCAP_API_KEY")
@@ -584,7 +747,7 @@ async def get_from_binance(coin):
     Binance Spot API - eng likvid bozor (real-time trade narxi).
     USDT juftlik ~ USD, farq 0.1% atrofida - median ichida tekislanadi.
     """
-    coin = coin.upper().strip().lstrip("$")
+    coin = normalize_symbol(coin)
     try:
         url = _get_env("BINANCE_URL")
 
@@ -623,7 +786,7 @@ async def get_from_bybit(coin):
     Free, no key: GET /v5/market/tickers?category=spot&symbol={COIN}USDT
     TON kabi delisted/rename coinlarda "Not supported" qaytarsa skip.
     """
-    coin = coin.upper().strip().lstrip("$")
+    coin = normalize_symbol(coin)
     try:
         symbols_to_try = BINANCE_SYMBOL_FALLBACKS.get(
             coin, [f"{coin}USDT"]
@@ -658,77 +821,20 @@ async def get_from_coingecko(coin):
     """
     CoinGecko API - aggregated fallback manba.
     """
-    coin = coin.upper().strip().lstrip("$")
+    coin = normalize_symbol(coin)
 
-    # Coinlarning CoinGecko ID mapping (yangilangan)
-    COIN_IDS = {
-        "BTC": "bitcoin",
-        "ETH": "ethereum",
-        "BNB": "binancecoin",
-        "SOL": "solana",
-        "XRP": "ripple",
-        "ADA": "cardano",
-        "DOGE": "dogecoin",
-        "DOT": "polkadot",
-        "MATIC": "polygon-ecosystem-token",
-        "POLY": "polygon-ecosystem-token",
-        "POL": "polygon-ecosystem-token",
-        "TRX": "tron",
-        "TON": "the-open-network",
-        "NOT": "notcoin",
-        "USDT": "tether",
-        "USDC": "usd-coin",
-        "SHIB": "shiba-inu",
-        "AVAX": "avalanche-2",
-        "LINK": "chainlink",
-        "UNI": "uniswap",
-        "LTC": "litecoin",
-        "BCH": "bitcoin-cash",
-        "PEPE": "pepe",
-        "ARB": "arbitrum",
-        "OP": "optimism",
-        "NEAR": "near",
-        "APT": "aptos",
-        "SUI": "sui",
-        "STX": "blockstack",
-        "INJ": "injective-protocol",
-        "TIA": "celestia",
-        "SEI": "sei-network",
-        "FET": "fetch-ai",
-        "RENDER": "render-token",
-        "RNDR": "render-token",
-        "GRT": "the-graph",
-        "IMX": "immutable-x",
-        "RUNE": "thorchain",
-        "ATOM": "cosmos",
-        "FIL": "filecoin",
-        "HBAR": "hedera-hashgraph",
-        "VET": "vechain",
-        "ALGO": "algorand",
-        "ICP": "internet-computer",
-        "SAND": "the-sandbox",
-        "MANA": "decentraland",
-        "AXS": "axie-infinity",
-        "XLM": "stellar",
-        "XMR": "monero",
-        "ETC": "ethereum-classic",
-        "WLD": "worldcoin-wld",
-        "JUP": "jupiter-exchange-solana",
-        "BONK": "bonk",
-        "WIF": "dogwifcoin",
-        "PYTH": "pyth-network",
-        "FLOKI": "floki",
-    }
-
-    # Fast path: mashhur coinlar network'siz topiladi
-    coin_id = COIN_IDS.get(coin)
+    # Fast path: mashhur coinlar network'siz topiladi (single source: COINGECKO_IDS).
+    # USDT -> tether exact match here, BEFORE any /search similar handling
+    # (USDTB, AUSDT, EVAUSDT...). normalize_symbol above already trimmed
+    # whitespace and uppercased, so "  usdt ", "UsDt" etc. all hit here.
+    coin_id = COINGECKO_IDS.get(coin)
     coin_name = None
     if coin_id is None:
         # Noma'lum ticker -> dinamik resolver (/search + cache)
         coin_id = await resolve_coingecko_id(coin)
         if coin_id is None:
             return None, None
-        coin_name = _gecko_search_cache.get(coin.upper().strip().lstrip("$"), {}).get("name")
+        coin_name = _gecko_search_cache.get(normalize_symbol(coin), {}).get("name")
 
     try:
         url = _get_env("COINGECKO_URL")
@@ -767,9 +873,16 @@ async def resolve_coingecko_id(symbol):
     xato/timeout cache'lanmaydi (keyingi safar qayta uriniladi).
     """
     try:
-        sym = (symbol or "").upper().strip().lstrip("$")
+        sym = normalize_symbol(symbol)
         if not sym:
             return None
+        # Exact fast-path BEFORE any /search similar-symbol handling:
+        # normalized USDT (any case/whitespace: "usdt", "  UsDt  ", "$USDT")
+        # -> "tether" (Tether), never confused with USDTB / AUSDT / EVAUSDT.
+        # No network needed; known tickers never hit /search.
+        fast = COINGECKO_IDS.get(sym)
+        if fast:
+            return fast
         now = time.monotonic()
         cached = _gecko_search_cache.get(sym)
         if cached:
@@ -784,7 +897,10 @@ async def resolve_coingecko_id(symbol):
         if status != 200 or not data:
             return None  # transient - cache'lanmaydi
         coins = data.get("coins", []) or []
-        exact = [c for c in coins if str(c.get("symbol", "")).upper() == sym]
+        # Exact, case-insensitive match AFTER normalization (both sides).
+        # Substring/fuzzy matches (USDTB, AUSDT, EVAUSDT for query USDT)
+        # are excluded here - only sym == sym qualifies.
+        exact = [c for c in coins if normalize_symbol(c.get("symbol", "")) == sym]
         if not exact:
             if len(_gecko_search_cache) >= _GECKO_CACHE_MAX:
                 _gecko_search_cache.clear()
@@ -816,7 +932,7 @@ async def resolve_coingecko_id(symbol):
 async def suggest_coins(query, limit=5):
     """Gecko search orqali o'xshash coinlar ro'yxati (topilmaganda taklif uchun)."""
     try:
-        q = (query or "").upper().strip().lstrip("$")
+        q = normalize_symbol(query)
         if not q:
             return []
         status, data = await _fetch(
@@ -827,7 +943,7 @@ async def suggest_coins(query, limit=5):
             return []
         out = []
         for c in (data.get("coins", []) or [])[:limit]:
-            sym = str(c.get("symbol", "")).upper()
+            sym = normalize_symbol(c.get("symbol", ""))
             name = c.get("name", "")
             if sym:
                 out.append({"symbol": sym, "name": name})
@@ -845,7 +961,7 @@ async def get_from_dexscreener(coin):
     so'ralgan coin narxi sifatida qaytarilmaydi.
     Returns ({"usd":.., "name":..}, "DexScreener") yoki (None, None).
     """
-    symbol = coin.upper().strip().lstrip("$")
+    symbol = normalize_symbol(coin)
     if not symbol:
         return None, None
     try:
@@ -861,9 +977,11 @@ async def get_from_dexscreener(coin):
 
         # Faqat aniq symbol match - keyin likvidlik/volum bo'yicha.
         # Aniq match bo'lmasa None (boshqa token narxini qaytarish xato).
+        # Both sides normalized: "  usdt " matches "USDT"/"usdt" exactly,
+        # but never USDTB / AUSDT / EVAUSDT (exact equality only).
         pool = [
             p for p in pairs
-            if str((p.get("baseToken") or {}).get("symbol", "")).upper() == symbol
+            if normalize_symbol((p.get("baseToken") or {}).get("symbol", "")) == symbol
             and p.get("priceUsd")
         ]
         if not pool:
