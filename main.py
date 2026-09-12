@@ -84,7 +84,14 @@ async def _enter_search(message: types.Message, state: FSMContext):
 @dp.message(Command("start"))
 async def start_bot(message: types.Message, state: FSMContext):
     await state.clear()
-    user = await db.execute("SELECT full_name FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
+    try:
+        user = await db.execute("SELECT full_name FROM Users WHERE id=?", (message.from_user.id,), fetchone=True)
+    except Exception:
+        logger.exception("start_bot DB error for user %s", message.from_user.id)
+        return await message.answer(
+            "❌ Vaqtinchalik xatolik, /start ni qayta yuboring.",
+            reply_markup=main_menu(message.from_user.id),
+        )
 
     if not user:
         kb = [[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]]
@@ -115,14 +122,14 @@ async def get_phone(message: types.Message, state: FSMContext):
         # ikkinchi urinish ham muvaffaqiyat hisoblanadi.
         await db.execute(
             "INSERT OR IGNORE INTO Users (id, phone, username, full_name, interval_min, is_premium, view_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (message.from_user.id, phone, username, full_name, MIN_INTERVAL, 0, 0),
+            (message.from_user.id, phone, username, full_name, MIN_INTERVAL, False, 0),
             commit=True
         )
         await message.answer("✅ <b>Ro'yxatdan o'tdingiz!</b>", reply_markup=main_menu(message.from_user.id), parse_mode="HTML")
         logger.info(f"New user: {message.from_user.id}")
         await _enter_search(message, state)
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
+    except Exception:
+        logger.exception("Registration error for user %s", message.from_user.id)
         await message.answer("❌ Xatolik! /start ni qayta yuboring.")
         await state.clear()
 
@@ -547,7 +554,7 @@ async def main():
         await db.connect()
         await db.create_tables()
     except Exception as e:
-        logger.error(f"Database init failed: {e}")
+        logger.exception(f"Database init failed: {e}")
         raise SystemExit(1)
 
     # Avto-xabardorlik schedulerni ishga tushirish
