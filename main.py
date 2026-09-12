@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiohttp import web
 
 from loader import bot, dp, db
 from utils.api.crypto import get_real_prices, suggest_coins
@@ -531,7 +532,6 @@ async def catch_all(message: types.Message):
 # ==================== HEALTH ====================
 def create_health_app():
     """Render keep-alive/monitoring uchun minimal app. Faqat GET /health."""
-    from aiohttp import web
 
     async def health_handler(request):
         return web.json_response({"status": "ok"})

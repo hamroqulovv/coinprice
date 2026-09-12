@@ -1,14 +1,25 @@
-# Render Blueprint - free web service (Python).
-# Dashboard: New -> Blueprint -> repo'ni tanlang. DB Supabase'da (tashqi),
-# shuning uchun bu yerda faqat compute. Keep-alive: UptimeRobot'dan
-# https://<app-name>.onrender.com/health ga har 5 daqiqada ping.
+# Render Blueprint - 100% BEPUL (Free Web Service + tashqi Supabase DB).
+# IKKI YO'L BOR (birini tanlang):
+#   A) Blueprint'siz (TAVSIYA, eng oddiy): Dashboard -> New -> Web Service
+#      -> repo'ni tanlang, quyidagi Build/Start'ni qo'lda kiriting.
+#      Bu fayl umuman kerak emas, o'chirsangiz ham bo'ladi.
+#   B) Blueprint bilan: Dashboard -> New -> Blueprint -> repo'ni tanlang.
+#      MUHIM: `plan: free` yozilmasa Render default Starter ($7/oy) qo'yadi -
+#      shuning uchun "Blueprint pulli"dek ko'rinadi. Bu faylda `plan: free`
+#      aniq ko'rsatilgan, demak $0.
+# DB Supabase'da (tashqi), shuning uchun bu yerda faqat compute.
+# Keep-alive: UptimeRobot'dan https://<app-name>.onrender.com/health ga
+# har 5 daqiqada ping (bo'lmasa 15 min'da uxlaydi).
 services:
   - type: web
     name: coinprice-bot
     runtime: python
+    plan: free
+    region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: BOT_TOKEN
         sync: false

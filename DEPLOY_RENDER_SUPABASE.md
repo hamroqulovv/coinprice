@@ -13,12 +13,31 @@ persistent disk. So: **compute on Render, database on Supabase.**
 3. Tables are created automatically on first bot start (`create_tables()`).
 4. Free limits that matter: 500MB DB (ours is KBs), 7-day pause on inactivity (our bot writes every 10s, so never pauses while running), no auto-backups (see §5).
 
-## 2. Render — free web service (5 min)
+## 2. Render — free Web Service, Blueprint'SIZ (5 min, $0)
 
-1. [dashboard.render.com](https://dashboard.render.com) → New → **Blueprint** → select this repo (`render.yaml` is included).
-2. Set env vars: `BOT_TOKEN`, `PRIMARY_ADMIN`, `ADMINS`, `DATABASE_URL` (the pooler URI from step 1).
-3. Deploy. Free service = 512MB/0.1 CPU, 750 hrs/month (covers 24/7 for one service).
-4. Health check path `/health` is preconfigured in `render.yaml`.
+> Nega Blueprint emas? Blueprint faylining o'zi tekin (IaC yaml),
+> lekin unda `plan:` yozilmasa Render default **Starter ($7/oy)** qo'yadi —
+> shuning uchun "Blueprint pulli"dek ko'rinadi. Manual **New → Web Service
+> → Instance Type: Free** esa 100% tekin, karta ham so'ramaydi.
+> Hozir `render.yaml` da `plan: free` aniq yozilgan, xohlasangiz Blueprint
+> bilan ham deploy qilsa bo'ladi — lekin quyidagi qo'lda yo'l tavsiya etiladi.
+
+1. [dashboard.render.com](https://dashboard.render.com) → **New → Web Service** → shu repo'ni tanlang.
+2. Sozlamalar (muhim — aynan shunday kiriting):
+   - **Name:** `coinprice-bot` (xohlagan nom)
+   - **Region:** `Frankfurt` (Supabase EU West ga eng yaqin)
+   - **Runtime:** `Python 3`
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `python main.py`
+   - **Instance Type:** `Free` (512MB / 0.1 CPU, 750 soat/oy — 1 servis 24/7 ga yetadi)
+   - **Health Check Path:** `/health`
+3. **Environment Variables** (Advanced → Add):
+   - `BOT_TOKEN` = @BotFather token
+   - `PRIMARY_ADMIN` = sizning Telegram ID
+   - `ADMINS` = qo'shimcha adminlar (bo'sh qoldirsa bo'ladi)
+   - `DATABASE_URL` = 1-qadamdagi Supabase pooler URI (port `6543`)
+   - `PYTHON_VERSION` = `3.11` (runtime.txt bilan bir xil)
+4. **Create Web Service** → Deploy. Free = karta so'ramaydi.
 
 ## 3. Keep-alive — UptimeRobot (3 min, free)
 
