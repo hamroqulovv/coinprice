@@ -1,7 +1,6 @@
 """Unit tests: catch_all routing (main.py).
 
-- Unregistered + private -> onboarding via start_bot (no "/start" detour).
-- Unregistered + group -> short private-chat hint, no state change.
+- Unregistered -> exact "/start" prompt, nothing else.
 - Registered + ticker -> straight to search_coin (never a register prompt).
 - Registered + gibberish -> generic "tushunarsiz" reply.
 """
@@ -10,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import main as m
+
+EXPECTED_UNREGISTERED = "👋 Botdan foydalanish uchun botga qaytadan  /start ni bosing."
 
 
 def _msg(text, uid=777, chat_type="private"):
@@ -28,25 +29,24 @@ def _state():
     return st
 
 
-def test_unregistered_private_goes_to_onboarding():
+def test_unregistered_gets_start_prompt():
     msg, st = _msg("BTC"), _state()
     with patch.object(m, "is_registered", AsyncMock(return_value=False)), \
-         patch.object(m, "start_bot", AsyncMock()) as start:
+         patch.object(m, "search_coin", AsyncMock()) as sc:
         import asyncio
         asyncio.run(m.catch_all(msg, st))
-    assert start.await_count == 1
-    assert msg.answer.await_count == 0  # "/start bosing" xabari yo'q
+    assert msg.answer.await_args.args[0] == EXPECTED_UNREGISTERED
+    assert sc.await_count == 0
 
 
-def test_unregistered_group_gets_hint_only():
+def test_unregistered_group_gets_same_start_prompt():
     msg, st = _msg("BTC", chat_type="group"), _state()
     with patch.object(m, "is_registered", AsyncMock(return_value=False)), \
-         patch.object(m, "start_bot", AsyncMock()) as start:
+         patch.object(m, "search_coin", AsyncMock()) as sc:
         import asyncio
         asyncio.run(m.catch_all(msg, st))
-    assert start.await_count == 0
-    out = msg.answer.await_args.args[0]
-    assert "shaxsiy chat" in out
+    assert msg.answer.await_args.args[0] == EXPECTED_UNREGISTERED
+    assert sc.await_count == 0
 
 
 def test_registered_ticker_goes_straight_to_search():
