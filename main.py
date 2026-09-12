@@ -741,7 +741,24 @@ async def back_main(message: types.Message, state: FSMContext):
 
 # ==================== CATCH ALL ====================
 @dp.message(F.text)
-async def catch_all(message: types.Message):
+async def catch_all(message: types.Message, state: FSMContext):
+    # Start bosmasdan yozganlar: search_coin'dagi ro'yxat tekshiruvi ularga
+    # yetib bormaydi (CoinSearch state'i yo'q), shuning uchun shu yerda
+    # aniq yo'naltiramiz - "tushunarsiz buyruq" o'rniga.
+    if not await is_registered(message.from_user.id):
+        logger.info("Unregistered user %s hit catch_all, sent to /start", message.from_user.id)
+        return await message.answer(
+            "👋 <b>Assalomu alaykum!</b>\n\n"
+            "Botdan foydalanish uchun avval ro'yxatdan o'ting 👇\n"
+            "Iltimos, <b>/start</b> buyrug'ini bosing.",
+            parse_mode="HTML",
+        )
+    # Restart'dan keyin state tozalanadi (MemoryStorage) - ticker'ga o'xshash
+    # matnni to'g'ridan-to'g'ri qidiruvga yo'naltiramiz.
+    coin = (message.text or "").upper().strip().lstrip("$")
+    if COIN_RE.match(coin):
+        await state.set_state(CoinSearch.waiting_for_symbol)
+        return await search_coin(message, state)
     await message.answer("❓ Tushunarsiz buyruq. Iltimos, pastdagi menyudan foydalaning 👇", reply_markup=main_menu(message.from_user.id))
 
 # ==================== HEALTH ====================
