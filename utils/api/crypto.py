@@ -129,18 +129,27 @@ MAX_BODY_BYTES = 2 * 1024 * 1024
 
 
 async def _read_json_capped(response):
-    """Body'ni limit bilan o'qib JSON parse. (status, data|None)."""
+    """Body'ni limit bilan o'qib JSON parse. (status, data|None).
+
+    NOTE: response.content.read(n) returns UP TO n bytes (whatever is
+    buffered so far), NOT the full body. Chunked APIs without
+    Content-Length (DexScreener/CBU/ER-API) came back truncated and died
+    in json parse with "Unterminated string starting at ..." at varying
+    columns. Loop until EOF, enforcing the cap per chunk instead.
+    """
     try:
         length = response.headers.get("Content-Length")
         if length is not None and int(length) > MAX_BODY_BYTES:
             logger.warning(f"Oversized body from {response.url}: {length} bytes")
             return response.status, None
-        body = await response.content.read(MAX_BODY_BYTES + 1)
-        if len(body) > MAX_BODY_BYTES:
-            logger.warning(f"Oversized body from {response.url}")
-            return response.status, None
+        buf = bytearray()
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            buf += chunk
+            if len(buf) > MAX_BODY_BYTES:
+                logger.warning(f"Oversized body from {response.url}")
+                return response.status, None
         import json as _json
-        return response.status, _json.loads(body.decode("utf-8"))
+        return response.status, _json.loads(bytes(buf).decode("utf-8"))
     except Exception as e:
         logger.warning(f"Bad JSON from {response.url}: {e}")
         return response.status, None
@@ -176,8 +185,13 @@ async def _fetch(url, params=None, extra_headers=None, throttle_gecko=None, **kw
         extra_headers = {**demo_headers, **(extra_headers or {})}
 
     session = await _session()
-    backoff = (5.0, 15.0)
+    # Snappy backoff: the per-coin budget is COIN_TIMEOUT (25s) shared by
+    # 6 parallel fetchers. Slow retries must fail fast instead of eating
+    # the whole budget (datacenter IPs get frequent Gecko 429s; honouring
+    # a 30s Retry-After alone guarantees a coin timeout).
+    backoff = (1.0, 2.0)
     for attempt in range(3):
+        retry_delay = None
         try:
             async with session.get(url, params=params, headers=extra_headers,
                                    allow_redirects=False) as r:
@@ -194,18 +208,28 @@ async def _fetch(url, params=None, extra_headers=None, throttle_gecko=None, **kw
                     delay = backoff[attempt]
                     try:
                         retry_after = float(r.headers.get("Retry-After", ""))
-                        delay = min(max(retry_after, 1.0), 30.0)
+                        delay = min(max(retry_after, 1.0), 10.0)
                     except (TypeError, ValueError):
                         pass
                     logger.debug(f"HTTP {status} {url}, retry in {delay}s")
-                    await asyncio.sleep(delay)
-                    continue
-                if status != 200:
+                    # Drain first so the pool slot is released BEFORE
+                    # sleeping: snoozing inside the context starves the
+                    # pool (limit=20) under parallel scheduler ticks.
+                    try:
+                        await r.read()
+                    except Exception:
+                        pass
+                    retry_delay = delay
+                elif status != 200:
                     return status, None
-                return await _read_json_capped(r)
+                else:
+                    return await _read_json_capped(r)
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             logger.debug(f"HTTP error {url}: {e}")
             return None, None
+        if retry_delay is not None:
+            await asyncio.sleep(retry_delay)
+            continue
     return 429, None
 
 
@@ -748,6 +772,11 @@ async def get_from_binance(coin):
     USDT juftlik ~ USD, farq 0.1% atrofida - median ichida tekislanadi.
     """
     coin = normalize_symbol(coin)
+    # USDT IS the quote asset (pairs are {COIN}USDT) - USDTUSDT can never
+    # exist. Skip the HTTP call entirely instead of eating a guaranteed
+    # 400 on every USDT lookup (which depends on aggregated venues).
+    if coin == "USDT":
+        return None, None
     try:
         url = _get_env("BINANCE_URL")
 
@@ -787,6 +816,10 @@ async def get_from_bybit(coin):
     TON kabi delisted/rename coinlarda "Not supported" qaytarsa skip.
     """
     coin = normalize_symbol(coin)
+    # Same as Binance above: {COIN}USDT quoting means USDTUSDT is
+    # impossible - skip instead of a guaranteed miss per USDT lookup.
+    if coin == "USDT":
+        return None, None
     try:
         symbols_to_try = BINANCE_SYMBOL_FALLBACKS.get(
             coin, [f"{coin}USDT"]

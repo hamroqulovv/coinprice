@@ -772,6 +772,9 @@ def create_health_app():
 
     app = web.Application()
     app.router.add_get("/health", health_handler)
+    # Render's port-scan probes GET / (Go-http-client) - answer 200 there too
+    # so deploy logs stay clean; /health remains the canonical check.
+    app.router.add_get("/", health_handler)
     return app
 
 
