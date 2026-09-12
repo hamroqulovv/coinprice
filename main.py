@@ -3,6 +3,7 @@ import html
 import logging
 import os
 import sqlite3
+from datetime import date
 from aiogram import types, F
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
@@ -152,6 +153,21 @@ async def show_coins_search(message: types.Message, state: FSMContext):
         return await message.answer("Iltimos /start bilan ro'yxatdan o'ting.", reply_markup=main_menu(message.from_user.id))
     await _enter_search(message, state)
 
+async def bump_lookup_counters(user_id: int):
+    """Bitta qidiruv uchun uchala hisoblagich (jami/kunlik/oylik).
+
+    Bitta UPDATE - SQLite + Postgres'da bir xil ishlaydi. COALESCE eski
+    NULL'larni, CASE esa kun/oy almashganda qayta boshlashni hal qiladi.
+    """
+    today, month = date.today().isoformat(), date.today().strftime("%Y-%m")
+    await db.execute(
+        "UPDATE Users SET view_count = view_count + 1, "
+        "daily_views = CASE WHEN last_view_date = ? THEN COALESCE(daily_views, 0) + 1 ELSE 1 END, "
+        "last_view_date = ?, "
+        "month_views = CASE WHEN last_view_month = ? THEN COALESCE(month_views, 0) + 1 ELSE 1 END, "
+        "last_view_month = ? WHERE id=?",
+        (today, today, month, month, user_id), commit=True)
+
 @dp.message(CoinSearch.waiting_for_symbol, F.text, ~F.text.in_(MENU_BUTTONS))
 async def search_coin(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
@@ -168,8 +184,9 @@ async def search_coin(message: types.Message, state: FSMContext):
     if not COIN_RE.match(coin):
         return await message.answer("❌ Noto'g'ri belgi. Masalan: <b>BTC</b>, <b>1INCH</b>, <b>PEPE</b>", parse_mode="HTML")
 
-    # Har bir haqiqiy qidiruvni hisoblash (profile'dagi So'rovlar uchun)
-    await db.execute("UPDATE Users SET view_count = view_count + 1 WHERE id=?", (message.from_user.id,), commit=True)
+    # Har bir haqiqiy qidiruvni hisoblash (profile'dagi So'rovlar +
+    # admin paneldagi kunlik/oylik statistika uchun).
+    await bump_lookup_counters(message.from_user.id)
 
     loading = await message.answer("🔍 Qidirilmoqda...")
     
@@ -356,7 +373,7 @@ async def edit_name(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditProfile.name)
     await callback.answer()
 
-@dp.message(EditProfile.name, F.text)
+@dp.message(EditProfile.name, F.text, ~F.text.in_(MENU_BUTTONS))
 async def update_name(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
@@ -383,7 +400,7 @@ async def edit_interval(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(EditProfile.interval)
     await callback.answer()
 
-@dp.message(EditProfile.interval, F.text)
+@dp.message(EditProfile.interval, F.text, ~F.text.in_(MENU_BUTTONS))
 async def update_interval(message: types.Message, state: FSMContext):
     if message.text == "🏠 Asosiy menyu":
         await state.clear()
@@ -402,113 +419,302 @@ async def update_interval(message: types.Message, state: FSMContext):
     await state.clear()
 
 # ==================== ADMIN ====================
+# Sodda panel: statistika (userlar + kunlik/oylik/jami so'rovlar),
+# userlar ro'yxati va har bir user kartasi (ko'rish + o'chirish).
+# Tugma matni atay o'zgartirilmadi ("👨‍💼 USERS Admin Panel") - eski
+# klaviaturalarda ham ishlashi uchun. Qo'shimcha kirish: /admin buyrug'i.
 ADMIN_PAGE_SIZE = 10
 
-async def _admin_page_keyboard(page: int):
-    """Bitta admin sahifasi uchun user tugmalari + Prev/Next navigatsiya."""
-    total = await db.execute("SELECT COUNT(*) FROM Users", fetchone=True)[0] or 0
+
+def _today_str():
+    return date.today().isoformat()
+
+
+def _month_str():
+    return date.today().strftime("%Y-%m")
+
+
+async def get_admin_stats():
+    """Admin statistika: userlar soni + kunlik/oylik/jami so'rovlar."""
+    today, month = _today_str(), _month_str()
+    total_users = await db.execute("SELECT COUNT(*) FROM Users", fetchone=True)
+    total_requests = await db.execute("SELECT COALESCE(SUM(view_count), 0) FROM Users", fetchone=True)
+    today_requests = await db.execute(
+        "SELECT COALESCE(SUM(daily_views), 0) FROM Users WHERE last_view_date=?",
+        (today,), fetchone=True)
+    month_requests = await db.execute(
+        "SELECT COALESCE(SUM(month_views), 0) FROM Users WHERE last_view_month=?",
+        (month,), fetchone=True)
+    return {
+        "total_users": (total_users[0] if total_users else 0) or 0,
+        "today_requests": (today_requests[0] if today_requests else 0) or 0,
+        "month_requests": (month_requests[0] if month_requests else 0) or 0,
+        "total_requests": (total_requests[0] if total_requests else 0) or 0,
+    }
+
+
+def _admin_stats_text(s):
+    return (
+        "👨‍💼 <b>Admin</b>\n"
+        "▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"👥 Userlar: <b>{s['total_users']}</b>\n"
+        f"📩 Bugungi so'rovlar: <b>{s['today_requests']}</b>\n"
+        f"📩 Oylik so'rovlar: <b>{s['month_requests']}</b>\n"
+        f"📩 Jami so'rovlar: <b>{s['total_requests']}</b>"
+    )
+
+
+def _admin_stats_keyboard():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="👥 Userlar", callback_data="adm:users:0")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def get_user_page(page: int):
+    """Sodda paginatsiya: (rows, total, page, pages)."""
+    total = await db.execute("SELECT COUNT(*) FROM Users", fetchone=True)
+    total = (total[0] if total else 0) or 0
     pages = max(1, (total + ADMIN_PAGE_SIZE - 1) // ADMIN_PAGE_SIZE)
     page = max(0, min(page, pages - 1))
-    users = await db.execute(
+    rows = await db.execute(
         "SELECT id, full_name, view_count FROM Users ORDER BY id LIMIT ? OFFSET ?",
-        (ADMIN_PAGE_SIZE, page * ADMIN_PAGE_SIZE), fetchall=True)
+        (ADMIN_PAGE_SIZE, page * ADMIN_PAGE_SIZE), fetchall=True) or []
+    return rows, total, page, pages
+
+
+def _user_list_keyboard(rows, total, page, pages):
     kb = InlineKeyboardBuilder()
-    for u in users:
-        kb.button(text=f"👤 {(u[1] or '')[:32]} ({u[2]})", callback_data=f"user_{u[0]}")
+    for uid, full_name, view_count in rows:
+        kb.button(text=f"👤 {(full_name or '')[:32]} ({view_count or 0})",
+                  callback_data=f"adm:user:{page}:{uid}")
     kb.adjust(1)
     nav = []
     if page > 0:
-        nav.append(types.InlineKeyboardButton(text="◀️ Prev", callback_data=f"admin_users_{page - 1}"))
+        nav.append(types.InlineKeyboardButton(text="◀️ Prev", callback_data=f"adm:users:{page - 1}"))
     if page < pages - 1:
-        nav.append(types.InlineKeyboardButton(text="Next ▶️", callback_data=f"admin_users_{page + 1}"))
+        nav.append(types.InlineKeyboardButton(text="Next ▶️", callback_data=f"adm:users:{page + 1}"))
     if nav:
         kb.row(*nav)
-    markup = kb.as_markup() if (users or nav) else None
-    return markup, total, page, pages
+    kb.button(text="🔙 Admin", callback_data="adm:stats")
+    return kb.as_markup()
+
+
+def _user_list_text(total, page, pages):
+    return f"👥 <b>Userlar: {total} (sahifa {page + 1}/{pages})</b>"
+
+
+async def get_user_card(uid: int):
+    """Bitta user kartasi uchun ma'lumot (None = topilmadi)."""
+    u = await db.execute(
+        "SELECT id, full_name, phone, username, interval_min, view_count, daily_views, month_views"
+        " FROM Users WHERE id=?", (uid,), fetchone=True)
+    if not u:
+        return None
+    watch = await db.execute(
+        "SELECT COUNT(*) FROM CryptoPreferences WHERE user_id=?", (uid,), fetchone=True)
+    return {
+        "user_id": u[0], "full_name": u[1], "phone": u[2], "username": u[3],
+        "interval_min": u[4], "view_count": u[5] or 0,
+        "daily_views": u[6] or 0, "month_views": u[7] or 0,
+        "watch_count": (watch[0] if watch else 0) or 0,
+    }
+
+
+def _user_card_text(c):
+    return (
+        f"👤 <b>{html.escape(c['full_name'] or '', quote=False)}</b>\n\n"
+        f"📞 Telefon: <code>{html.escape(c['phone'] or '', quote=False)}</code>\n"
+        f"💬 Username: @{html.escape(c['username'] or 'N/A', quote=False)}\n"
+        f"🆔 ID: <code>{c['user_id']}</code>\n"
+        f"🕒 Interval: {c['interval_min']}s\n"
+        f"👁 So'rovlar: jami {c['view_count']} | oy {c['month_views']} | bugun {c['daily_views']}\n"
+        f"🔔 Kuzatuvda: {c['watch_count']} ta"
+    )
+
+
+async def delete_user(uid: int):
+    """User + kuzatuvlarini o'chirish. True = o'chirildi."""
+    exists = await db.execute("SELECT 1 FROM Users WHERE id=?", (uid,), fetchone=True)
+    if not exists:
+        return False
+    await db.execute("DELETE FROM CryptoPreferences WHERE user_id=?", (uid,), commit=True)
+    await db.execute("DELETE FROM Users WHERE id=?", (uid,), commit=True)
+    return True
+
+
+async def _deny_if_not_admin(target, user_id):
+    """Admin bo'lmaganlarga jim o'rniga javob qaytarish (hech qachon sukut yo'q)."""
+    if is_admin(user_id):
+        return False
+    logger.warning("Admin panel denied for user %s", user_id)
+    if isinstance(target, types.Message):
+        await target.answer("⛔ Bu bo'lim faqat adminlar uchun.")
+    else:
+        await target.answer("⛔ Faqat adminlar uchun.", show_alert=True)
+    return True
+
+
+async def _show_admin(message: types.Message, state: FSMContext):
+    if await _deny_if_not_admin(message, message.from_user.id):
+        return
+    await state.clear()
+    logger.info("Admin panel opened by %s", message.from_user.id)
+    try:
+        stats = await get_admin_stats()
+    except Exception:
+        logger.exception("Admin stats DB error")
+        return await message.answer("❌ Statistika o'qilmadi, keyinroq urinib ko'ring.")
+    await message.answer(_admin_stats_text(stats), parse_mode="HTML",
+                         reply_markup=_admin_stats_keyboard())
+
+
+@dp.message(Command("admin"))
+async def admin_cmd(message: types.Message, state: FSMContext):
+    await _show_admin(message, state)
+
 
 @dp.message(F.text == "👨‍💼 USERS Admin Panel")
-async def admin_panel(message: types.Message):
-    if not is_admin(message.from_user.id):
+async def admin_panel(message: types.Message, state: FSMContext):
+    await _show_admin(message, state)
+
+
+@dp.callback_query(F.data == "adm:stats")
+async def admin_stats_back(callback: types.CallbackQuery, state: FSMContext):
+    if await _deny_if_not_admin(callback, callback.from_user.id):
         return
-
-    markup, total, page, pages = await _admin_page_keyboard(0)
-    await message.answer(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
-
-@dp.callback_query(F.data.startswith("admin_users_"))
-async def admin_panel_page(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer()
+    await state.clear()
+    try:
+        stats = await get_admin_stats()
+    except Exception:
+        logger.exception("Admin stats DB error")
+        await callback.answer("❌ Xatolik", show_alert=True)
         return
     try:
-        page = int(callback.data.split("_")[-1])
+        await callback.message.edit_text(_admin_stats_text(stats), parse_mode="HTML",
+                                         reply_markup=_admin_stats_keyboard())
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:users:"))
+async def admin_users_page(callback: types.CallbackQuery):
+    if await _deny_if_not_admin(callback, callback.from_user.id):
+        return
+    try:
+        page = int(callback.data.rsplit(":", 1)[1])
     except (ValueError, IndexError):
         page = 0
-    markup, total, page, pages = await _admin_page_keyboard(page)
     try:
-        await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+        rows, total, page, pages = await get_user_page(page)
+    except Exception:
+        logger.exception("Admin users DB error")
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
+    try:
+        await callback.message.edit_text(_user_list_text(total, page, pages), parse_mode="HTML",
+                                         reply_markup=_user_list_keyboard(rows, total, page, pages))
     except TelegramBadRequest as e:
-        # Ikkita tez bosishda xabar o'zgarmagan bo'lishi mumkin
         if "message is not modified" not in str(e).lower():
             raise
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("user_"))
-async def manage_user(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm:user:"))
+async def admin_user_card(callback: types.CallbackQuery):
+    if await _deny_if_not_admin(callback, callback.from_user.id):
         return
     try:
-        uid = int(callback.data.split("_", 1)[1])
+        _, _, page_s, uid_s = callback.data.split(":")
+        page, uid = int(page_s), int(uid_s)
     except (ValueError, IndexError):
-        await callback.answer("❌ Invalid callback data", show_alert=True)
+        await callback.answer("❌ Xatolik", show_alert=True)
         return
-    # Select explicit columns to avoid confusion if DB schema changes
-    u = await db.execute(
-        "SELECT id, full_name, phone, username, interval_min, view_count FROM Users WHERE id=?",
-        (uid,), fetchone=True
-    )
-
-    if not u:
-        await callback.answer("User not found", show_alert=True)
+    card = await get_user_card(uid)
+    if not card:
+        await callback.answer("User topilmadi", show_alert=True)
         return
-
-    (user_id, full_name, phone, username, interval_min, view_count) = u
-    username_display = username or "N/A"
-
-    text = (
-        f"👤 <b>{html.escape(full_name or '', quote=False)}</b>\n\n"
-        f"📞 Telefon: <code>{html.escape(phone or '', quote=False)}</code>\n"
-        f"💬 Username: @{username_display}\n"
-        f"🆔 ID: <code>{user_id}</code>\n"
-        f"🕒 Interval: {interval_min}s\n"
-        f"👁 So'rovlar: {view_count}"
-    )
-
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔙 Back", callback_data="back_admin")
+    kb.button(text="❌ O'chirish", callback_data=f"adm:del:{page}:{uid}")
+    kb.button(text="🔙 Orqaga", callback_data=f"adm:users:{page}")
     kb.adjust(1)
-
     try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup(), parse_mode="HTML")
+        await callback.message.edit_text(_user_card_text(card), parse_mode="HTML",
+                                         reply_markup=kb.as_markup())
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
             raise
     await callback.answer()
 
-@dp.callback_query(F.data == "back_admin")
-async def back_admin(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer()
+
+@dp.callback_query(F.data.startswith("adm:del:"))
+async def admin_user_delete_ask(callback: types.CallbackQuery):
+    if await _deny_if_not_admin(callback, callback.from_user.id):
         return
-    # Ro'yxatning birinchi sahifasiga qaytish (o'chirish o'rniga -
-    # paginatsiya yo'qolmaydi, ikkinchi bosish crash qilmaydi)
-    markup, total, page, pages = await _admin_page_keyboard(0)
     try:
-        await callback.message.edit_text(f"👥 Users: {total} (sahifa {page + 1}/{pages})", reply_markup=markup)
+        _, _, page_s, uid_s = callback.data.split(":")
+        page, uid = int(page_s), int(uid_s)
+    except (ValueError, IndexError):
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
+    card = await get_user_card(uid)
+    if not card:
+        await callback.answer("User topilmadi", show_alert=True)
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Ha, o'chirish", callback_data=f"adm:confirm_del:{page}:{uid}")
+    kb.button(text="🔙 Yo'q", callback_data=f"adm:user:{page}:{uid}")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(
+            f"⚠️ <b>{html.escape(card['full_name'] or '', quote=False)}</b> "
+            f"(<code>{uid}</code>) o'chirilsinmi?\nKuzatuvlari ham o'chadi.",
+            parse_mode="HTML", reply_markup=kb.as_markup())
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
             raise
     await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("adm:confirm_del:"))
+async def admin_user_delete_do(callback: types.CallbackQuery):
+    if await _deny_if_not_admin(callback, callback.from_user.id):
+        return
+    try:
+        parts = callback.data.rsplit(":", 2)
+        page, uid = int(parts[1]), int(parts[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
+    try:
+        ok = await delete_user(uid)
+    except Exception:
+        logger.exception("Admin delete DB error for user %s", uid)
+        await callback.answer("❌ Xatolik", show_alert=True)
+        return
+    await callback.answer("✅ O'chirildi!" if ok else "Topilmadi", show_alert=True)
+    try:
+        rows, total, page, pages = await get_user_page(page)
+    except Exception:
+        logger.exception("Admin users DB error")
+        return
+    try:
+        await callback.message.edit_text(_user_list_text(total, page, pages), parse_mode="HTML",
+                                         reply_markup=_user_list_keyboard(rows, total, page, pages))
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+
+
+# Eski inline tugmalar (yangilanishdan oldingi xabarlarda qolgan bo'lishi
+# mumkin) bosilsa sukut saqlanmaydi - adminni yangi panelga yo'naltiramiz.
+@dp.callback_query((F.data.startswith("admin_users_")) | (F.data.startswith("user_")) | (F.data == "back_admin"))
+async def admin_legacy_button(callback: types.CallbackQuery):
+    if await _deny_if_not_admin(callback, callback.from_user.id):
+        return
+    await callback.answer("⏳ Bu menyu eskirgan — /admin ni qayta oching.", show_alert=True)
 
 # ==================== SUPPORT ====================
 @dp.message(F.text == "🆘 Yordam")

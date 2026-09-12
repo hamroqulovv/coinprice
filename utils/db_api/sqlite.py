@@ -98,6 +98,9 @@ class Database:
         # Add daily tracking columns if they do not exist (for existing DBs)
         await self._migrate("ALTER TABLE Users ADD COLUMN daily_views INTEGER DEFAULT 0")
         await self._migrate("ALTER TABLE Users ADD COLUMN last_view_date TEXT")
+        # Oylik statistika (admin panel: bu oydagi jami so'rovlar)
+        await self._migrate("ALTER TABLE Users ADD COLUMN month_views INTEGER DEFAULT 0")
+        await self._migrate("ALTER TABLE Users ADD COLUMN last_view_month TEXT")
         # Add premium metadata columns for new installs or existing DBs
         await self._migrate("ALTER TABLE Users ADD COLUMN premium_plan_days INTEGER")
         await self._migrate("ALTER TABLE Users ADD COLUMN premium_given_at DATETIME")

@@ -120,6 +120,8 @@ class PostgresDatabase:
                 view_count INTEGER DEFAULT 0,
                 daily_views INTEGER DEFAULT 0,
                 last_view_date TEXT,
+                month_views INTEGER DEFAULT 0,
+                last_view_month TEXT,
                 premium_plan_days INTEGER,
                 premium_given_at TIMESTAMP,
                 last_payment_amount TEXT,
@@ -128,6 +130,9 @@ class PostgresDatabase:
             """,
             commit=True,
         )
+        # Mavjud Supabase DB'lar uchun (CREATE TABLE IF NOT EXISTS eskisini yangilamaydi)
+        await self._migrate("ALTER TABLE Users ADD COLUMN month_views INTEGER DEFAULT 0")
+        await self._migrate("ALTER TABLE Users ADD COLUMN last_view_month TEXT")
         await self.execute(
             """
             CREATE TABLE IF NOT EXISTS CryptoPreferences (

@@ -12,6 +12,8 @@ SQLite file `main.db` in the project root, created and migrated automatically on
 | `phone`, `username`, `full_name` | Contact details (name is editable) |
 | `interval_min` | Alert interval in **seconds** (default 40) |
 | `view_count` | Lifetime lookups |
+| `daily_views` + `last_view_date` | Today's lookups (auto-resets on day change) |
+| `month_views` + `last_view_month` | This month's lookups (auto-resets on month change) |
 
 **`CryptoPreferences`** — watchlist, one row per (user, coin):
 
@@ -25,7 +27,7 @@ SQLite file `main.db` in the project root, created and migrated automatically on
 
 All migrations are `IF NOT EXISTS` / `ADD COLUMN`-in-`try/except` style: safe to run on every boot, on fresh and legacy DBs alike. Duplicate watchlist rows from older versions are deduplicated automatically.
 
-> Legacy columns from the removed premium system (`is_premium`, `daily_views`, …) may still exist in old databases — they are simply unused.
+> Legacy columns from the removed premium system (`is_premium`, …) may still exist in old databases — they are simply unused.
 
 ## Reset / inspect
 
